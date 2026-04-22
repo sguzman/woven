@@ -517,6 +517,33 @@ impl Tab {
         }
     }
 
+    fn is_wstp_desync_error(err: &anyhow::Error) -> bool {
+        let s = err.to_string();
+        s.contains("WSNextPacket called while the current packet has unread data")
+            || s.contains("WSTP error (code 22)")
+            || s.contains("has no context")
+    }
+
+    fn eval_with_recovery(&mut self, eval_id: u64, wl_input: &str) -> anyhow::Result<EvalResult> {
+        match self.kernel.evaluate(eval_id, wl_input) {
+            Ok(out) => Ok(out),
+            Err(err) => {
+                if Self::is_wstp_desync_error(&err) {
+                    tracing::warn!(
+                        tab_id = self.id,
+                        eval_id,
+                        error = %err,
+                        "kernel link desynced; restarting and retrying once"
+                    );
+                    self.kernel.restart_with_current_config()?;
+                    self.kernel.evaluate(eval_id, wl_input)
+                } else {
+                    Err(err)
+                }
+            }
+        }
+    }
+
     fn tick_eval_queue(&mut self, max_per_frame: usize, next_id: &mut u64) {
         for _ in 0..max_per_frame {
             let Some(job) = self.eval_queue.pop_front() else {
@@ -534,9 +561,8 @@ impl Tab {
                 .map(|g| g.input.clone())
                 .unwrap_or_default();
             let started = Instant::now();
-            let result = self
-                .kernel
-                .evaluate(self.id * 1_000_000 + idx as u64, &input);
+            let eval_id = self.id * 1_000_000 + idx as u64;
+            let result = self.eval_with_recovery(eval_id, &input);
             let duration = started.elapsed();
 
             match result {
@@ -636,7 +662,7 @@ impl Tab {
                     let eval_id = self.id * 1_000_000 + 900_000 + self.doc_eval_counter;
                     self.doc_eval_counter = self.doc_eval_counter.wrapping_add(1);
 
-                    match self.kernel.evaluate(eval_id, &wl) {
+                    match self.eval_with_recovery(eval_id, &wl) {
                         Ok(out) => {
                             let json = unquote_json_string(&out.output_text);
                             match serde_json::from_str::<Vec<String>>(&json) {
@@ -667,7 +693,7 @@ impl Tab {
                     let eval_id = self.id * 1_000_000 + 910_000 + self.doc_eval_counter;
                     self.doc_eval_counter = self.doc_eval_counter.wrapping_add(1);
 
-                    match self.kernel.evaluate(eval_id, &wl) {
+                    match self.eval_with_recovery(eval_id, &wl) {
                         Ok(out) => {
                             let json = unquote_json_string(&out.output_text);
                             match serde_json::from_str::<serde_json::Value>(&json) {
@@ -1199,6 +1225,23 @@ impl eframe::App for WovenApp {
                     egui::CollapsingHeader::new("File Navigator")
                         .default_open(true)
                         .show(ui, |ui| {
+                            egui::CollapsingHeader::new("Notebooks")
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    for i in 0..self.tabs.len() {
+                                        let mut label = self.tabs[i].title.clone();
+                                        if self.tabs[i].dirty {
+                                            label.push('*');
+                                        }
+                                        if ui
+                                            .selectable_label(i == self.active_tab, label)
+                                            .clicked()
+                                        {
+                                            self.active_tab = i;
+                                        }
+                                    }
+                                });
+
                             egui::CollapsingHeader::new("Files")
                                 .default_open(true)
                                 .show(ui, |ui| {
@@ -1291,6 +1334,7 @@ impl eframe::App for WovenApp {
                 .resizable(true)
                 .default_size(self.config.ui.inspector_width)
                 .min_size(260.0)
+                .size_range(self.config.ui.inspector_width..=self.config.ui.inspector_max_width)
                 .frame(
                     egui::Frame::NONE
                         .fill(palette.panel_alt)
@@ -1346,10 +1390,12 @@ impl eframe::App for WovenApp {
                             ui.add_space(6.0);
 
                             ui.horizontal(|ui| {
-                                let resp = ui.add(
+                                let w = (ui.available_width() - 72.0).max(160.0);
+                                let resp = ui.add_sized(
+                                    [w, 0.0],
                                     egui::TextEdit::singleline(&mut tab.doc_query)
                                         .hint_text("Search symbols (e.g. Plot, Integrate)…")
-                                        .desired_width(f32::INFINITY),
+                                        .desired_width(w),
                                 );
                                 if resp.lost_focus()
                                     && ui.input(|i| i.key_pressed(egui::Key::Enter))
@@ -1430,237 +1476,269 @@ impl eframe::App for WovenApp {
                 ui.add_space(10.0);
 
                 let visible = tab.visible_indices();
-                ui.vertical_centered(|ui| {
-                    ui.set_max_width(980.0);
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
+                let full_w = ui.available_width();
+                let content_w = full_w.min(980.0);
+                let side = ((full_w - content_w) / 2.0).max(0.0);
 
-                            for idx in visible {
-                                if idx >= tab.groups.len() {
-                                    continue;
-                                }
+                ui.horizontal(|ui| {
+                    ui.add_space(side);
 
-                                ui.add_space(10.0);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(content_w, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_min_width(content_w);
+                            ui.set_max_width(content_w);
 
-                                let group_id = tab.groups[idx].id;
-                                let accent = group_accent_color(&tab.groups[idx]);
-                                let is_selected = idx == tab.selected;
-                                let is_checked = tab.selection.contains(&group_id);
-                                let input_blue = egui::Color32::from_rgb(80, 160, 255);
-                                let output_green = egui::Color32::from_rgb(90, 210, 120);
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.set_min_width(content_w);
+                                    ui.set_max_width(content_w);
 
-                                let mut request_eval = false;
-                                let mut request_delete = false;
-
-                                let frame = egui::Frame::NONE
-                                    .fill(palette.card)
-                                    .stroke(if is_selected {
-                                        egui::Stroke::new(1.5, accent)
-                                    } else {
-                                        palette.subtle_stroke
-                                    })
-                                    .corner_radius(egui::CornerRadius::same(10))
-                                    .inner_margin(egui::Margin::symmetric(14, 12));
-
-                                let inner = frame.show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-
-                                    ui.horizontal(|ui| {
-                                        ui.vertical(|ui| {
-                                            let mut checked = is_checked;
-                                            let resp = ui.checkbox(&mut checked, "");
-                                            if resp.clicked() {
-                                                let modifiers = ui.input(|i| i.modifiers);
-                                                tab.set_selected(idx);
-                                                if modifiers.shift {
-                                                    let anchor = tab
-                                                        .selection_anchor
-                                                        .unwrap_or(tab.selected);
-                                                    tab.select_range(anchor, idx);
-                                                } else if modifiers.ctrl {
-                                                    tab.toggle_selection_for(idx);
-                                                } else {
-                                                    tab.selection.clear();
-                                                    tab.toggle_selection_for(idx);
-                                                }
-                                                tab.selection_anchor = Some(idx);
-                                            }
-
-                                            let run = ui.button("Run").on_hover_text("Evaluate");
-                                            if run.clicked() {
-                                                tab.set_selected(idx);
-                                                request_eval = true;
-                                            }
-
-                                            let status = tab.groups[idx].status;
-                                            match status {
-                                                CellStatus::Running => {
-                                                    ui.add(egui::Spinner::new().size(16.0));
-                                                }
-                                                CellStatus::Error => {
-                                                    ui.colored_label(
-                                                        egui::Color32::from_rgb(220, 80, 80),
-                                                        "ERR",
-                                                    );
-                                                }
-                                                CellStatus::Idle => {
-                                                    if tab.groups[idx].output.is_some() {
-                                                        ui.colored_label(
-                                                            egui::Color32::from_rgb(90, 210, 120),
-                                                            "OK",
-                                                        );
-                                                    } else {
-                                                        ui.label("");
-                                                    }
-                                                }
-                                            }
-                                        });
+                                    for idx in visible {
+                                        if idx >= tab.groups.len() {
+                                            continue;
+                                        }
 
                                         ui.add_space(10.0);
 
-                                        ui.vertical(|ui| {
-                                            let group = &mut tab.groups[idx];
-                                            let desired_rows =
-                                                group.input.lines().count().clamp(1, 12);
-                                            let input_id = egui::Id::new(("cell_input", group.id));
-                                            if tab.focus_input_group_id == Some(group.id) {
-                                                ui.ctx()
-                                                    .memory_mut(|mem| mem.request_focus(input_id));
-                                                tab.focus_input_group_id = None;
-                                            }
-                                            let resp = ui.add(
-                                                egui::TextEdit::multiline(&mut group.input)
-                                                    .font(egui::TextStyle::Monospace)
-                                                    .text_color(input_blue)
-                                                    .desired_rows(desired_rows)
-                                                    .desired_width(f32::INFINITY)
-                                                    .frame(egui::Frame::NONE)
-                                                    .id(input_id)
-                                                    .hint_text("Wolfram Language input…"),
-                                            );
-                                            if resp.changed() {
-                                                tab.dirty = true;
-                                            }
+                                        let group_id = tab.groups[idx].id;
+                                        let accent = group_accent_color(&tab.groups[idx]);
+                                        let is_selected = idx == tab.selected;
+                                        let is_checked = tab.selection.contains(&group_id);
+                                        let input_blue = egui::Color32::from_rgb(80, 160, 255);
+                                        let output_green = egui::Color32::from_rgb(90, 210, 120);
 
-                                            if let Some(out) = group.output.as_ref() {
-                                                if !group.collapsed {
-                                                    ui.add_space(10.0);
-                                                    ui.separator();
-                                                    ui.add_space(10.0);
+                                        let mut request_eval = false;
+                                        let mut request_delete = false;
 
-                                                    let output_text = truncate_str(
-                                                        &out.output_text,
-                                                        self.config.plot.max_output_chars,
-                                                    );
-                                                    if !output_text.trim().is_empty() {
-                                                        ui.label(
-                                                            egui::RichText::new(output_text)
-                                                                .size(20.0)
-                                                                .color(output_green),
-                                                        );
+                                        let frame = egui::Frame::NONE
+                                            .fill(palette.card)
+                                            .stroke(if is_selected {
+                                                egui::Stroke::new(1.5, accent)
+                                            } else {
+                                                palette.subtle_stroke
+                                            })
+                                            .corner_radius(egui::CornerRadius::same(10))
+                                            .inner_margin(egui::Margin::symmetric(14, 12));
+
+                                        let inner = frame.show(ui, |ui| {
+                                            ui.set_min_width(content_w);
+                                            ui.set_max_width(content_w);
+
+                                            ui.horizontal(|ui| {
+                                                ui.vertical(|ui| {
+                                                    let mut checked = is_checked;
+                                                    let resp = ui.checkbox(&mut checked, "");
+                                                    if resp.clicked() {
+                                                        let modifiers = ui.input(|i| i.modifiers);
+                                                        tab.set_selected(idx);
+                                                        if modifiers.shift {
+                                                            let anchor = tab
+                                                                .selection_anchor
+                                                                .unwrap_or(tab.selected);
+                                                            tab.select_range(anchor, idx);
+                                                        } else if modifiers.ctrl {
+                                                            tab.toggle_selection_for(idx);
+                                                        } else {
+                                                            tab.selection.clear();
+                                                            tab.toggle_selection_for(idx);
+                                                        }
+                                                        tab.selection_anchor = Some(idx);
                                                     }
 
-                                                    let messages: Vec<&String> = out
-                                                        .messages
-                                                        .iter()
-                                                        .take(self.config.plot.max_messages)
-                                                        .collect();
-                                                    if !messages.is_empty() {
-                                                        ui.add_space(8.0);
-                                                        for m in messages {
-                                                            ui.colored_label(palette.text_dim, m);
+                                                    let run =
+                                                        ui.button("Run").on_hover_text("Evaluate");
+                                                    if run.clicked() {
+                                                        tab.set_selected(idx);
+                                                        request_eval = true;
+                                                    }
+
+                                                    let status = tab.groups[idx].status;
+                                                    match status {
+                                                        CellStatus::Running => {
+                                                            ui.add(egui::Spinner::new().size(16.0));
+                                                        }
+                                                        CellStatus::Error => {
+                                                            ui.colored_label(
+                                                                egui::Color32::from_rgb(
+                                                                    220, 80, 80,
+                                                                ),
+                                                                "ERR",
+                                                            );
+                                                        }
+                                                        CellStatus::Idle => {
+                                                            if tab.groups[idx].output.is_some() {
+                                                                ui.colored_label(
+                                                                    egui::Color32::from_rgb(
+                                                                        90, 210, 120,
+                                                                    ),
+                                                                    "OK",
+                                                                );
+                                                            } else {
+                                                                ui.label("");
+                                                            }
                                                         }
                                                     }
+                                                });
 
-                                                    if self.config.plot.placeholder_enabled
-                                                        && is_plot_like(out)
-                                                    {
-                                                        ui.add_space(10.0);
-                                                        Plot::new(format!(
-                                                            "plot_placeholder_{}",
-                                                            group.id
-                                                        ))
-                                                        .show(ui, |plot_ui| {
-                                                            let points: PlotPoints = (0..100)
-                                                                .map(|i| {
-                                                                    let x = i as f64 / 10.0;
-                                                                    [x, (x).sin()]
-                                                                })
-                                                                .collect();
-                                                            plot_ui
-                                                                .line(Line::new("sin(x)", points));
+                                                ui.add_space(10.0);
+
+                                                ui.vertical(|ui| {
+                                                    let group = &mut tab.groups[idx];
+                                                    let desired_rows =
+                                                        group.input.lines().count().clamp(1, 12);
+                                                    let input_id =
+                                                        egui::Id::new(("cell_input", group.id));
+                                                    if tab.focus_input_group_id == Some(group.id) {
+                                                        ui.ctx().memory_mut(|mem| {
+                                                            mem.request_focus(input_id);
                                                         });
+                                                        tab.focus_input_group_id = None;
                                                     }
-                                                }
+                                                    let resp = ui.add(
+                                                        egui::TextEdit::multiline(&mut group.input)
+                                                            .font(egui::TextStyle::Monospace)
+                                                            .text_color(input_blue)
+                                                            .desired_rows(desired_rows)
+                                                            .desired_width(f32::INFINITY)
+                                                            .frame(egui::Frame::NONE)
+                                                            .id(input_id)
+                                                            .hint_text("Wolfram Language input…"),
+                                                    );
+                                                    if resp.changed() {
+                                                        tab.dirty = true;
+                                                    }
+
+                                                    if let Some(out) = group.output.as_ref() {
+                                                        if !group.collapsed {
+                                                            ui.add_space(10.0);
+                                                            ui.separator();
+                                                            ui.add_space(10.0);
+
+                                                            let output_text = truncate_str(
+                                                                &out.output_text,
+                                                                self.config.plot.max_output_chars,
+                                                            );
+                                                            if !output_text.trim().is_empty() {
+                                                                ui.label(
+                                                                    egui::RichText::new(
+                                                                        output_text,
+                                                                    )
+                                                                    .size(20.0)
+                                                                    .color(output_green),
+                                                                );
+                                                            }
+
+                                                            let messages: Vec<&String> = out
+                                                                .messages
+                                                                .iter()
+                                                                .take(self.config.plot.max_messages)
+                                                                .collect();
+                                                            if !messages.is_empty() {
+                                                                ui.add_space(8.0);
+                                                                for m in messages {
+                                                                    ui.colored_label(
+                                                                        palette.text_dim,
+                                                                        m,
+                                                                    );
+                                                                }
+                                                            }
+
+                                                            if self.config.plot.placeholder_enabled
+                                                                && is_plot_like(out)
+                                                            {
+                                                                ui.add_space(10.0);
+                                                                Plot::new(format!(
+                                                                    "plot_placeholder_{}",
+                                                                    group.id
+                                                                ))
+                                                                .show(ui, |plot_ui| {
+                                                                    let points: PlotPoints = (0
+                                                                        ..100)
+                                                                        .map(|i| {
+                                                                            let x = i as f64 / 10.0;
+                                                                            [x, (x).sin()]
+                                                                        })
+                                                                        .collect();
+                                                                    plot_ui.line(Line::new(
+                                                                        "sin(x)", points,
+                                                                    ));
+                                                                });
+                                                            }
+                                                        }
+                                                    }
+                                                });
+
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(egui::Align::TOP),
+                                                    |ui| {
+                                                        let group = &mut tab.groups[idx];
+                                                        let icon = if group.collapsed {
+                                                            "Expand"
+                                                        } else {
+                                                            "Collapse"
+                                                        };
+                                                        if ui
+                                                            .button(icon)
+                                                            .on_hover_text("Collapse/expand output")
+                                                            .clicked()
+                                                        {
+                                                            group.collapsed = !group.collapsed;
+                                                            tab.dirty = true;
+                                                        }
+                                                        let bookmark = if group.bookmarked {
+                                                            "Bookmarked"
+                                                        } else {
+                                                            "Bookmark"
+                                                        };
+                                                        if ui.button(bookmark).clicked() {
+                                                            group.bookmarked = !group.bookmarked;
+                                                            tab.dirty = true;
+                                                        }
+                                                    },
+                                                );
+                                            });
+                                        });
+
+                                        let rect = inner.response.rect;
+                                        let stripe = egui::Rect::from_min_max(
+                                            rect.min,
+                                            egui::pos2(rect.min.x + 6.0, rect.max.y),
+                                        );
+                                        ui.painter().rect_filled(
+                                            stripe,
+                                            egui::CornerRadius::same(10),
+                                            accent,
+                                        );
+
+                                        inner.response.context_menu(|ui| {
+                                            if ui.button("Evaluate").clicked() {
+                                                request_eval = true;
+                                                ui.close_kind(egui::UiKind::Menu);
+                                            }
+                                            if ui.button("Delete selected…").clicked() {
+                                                request_delete = true;
+                                                ui.close_kind(egui::UiKind::Menu);
                                             }
                                         });
 
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::TOP),
-                                            |ui| {
-                                                let group = &mut tab.groups[idx];
-                                                let icon = if group.collapsed {
-                                                    "Expand"
-                                                } else {
-                                                    "Collapse"
-                                                };
-                                                if ui
-                                                    .button(icon)
-                                                    .on_hover_text("Collapse/expand output")
-                                                    .clicked()
-                                                {
-                                                    group.collapsed = !group.collapsed;
-                                                    tab.dirty = true;
-                                                }
-                                                let bookmark = if group.bookmarked {
-                                                    "Bookmarked"
-                                                } else {
-                                                    "Bookmark"
-                                                };
-                                                if ui.button(bookmark).clicked() {
-                                                    group.bookmarked = !group.bookmarked;
-                                                    tab.dirty = true;
-                                                }
-                                            },
-                                        );
-                                    });
-                                });
-
-                                let rect = inner.response.rect;
-                                let stripe = egui::Rect::from_min_max(
-                                    rect.min,
-                                    egui::pos2(rect.min.x + 6.0, rect.max.y),
-                                );
-                                ui.painter().rect_filled(
-                                    stripe,
-                                    egui::CornerRadius::same(10),
-                                    accent,
-                                );
-
-                                inner.response.context_menu(|ui| {
-                                    if ui.button("Evaluate").clicked() {
-                                        request_eval = true;
-                                        ui.close_kind(egui::UiKind::Menu);
-                                    }
-                                    if ui.button("Delete selected…").clicked() {
-                                        request_delete = true;
-                                        ui.close_kind(egui::UiKind::Menu);
+                                        if request_eval {
+                                            tab.eval_queue.push_back(EvalJob {
+                                                idx,
+                                                spawn_next: true,
+                                            });
+                                        }
+                                        if request_delete {
+                                            request_delete_confirm = true;
+                                        }
                                     }
                                 });
+                        },
+                    );
 
-                                if request_eval {
-                                    tab.eval_queue.push_back(EvalJob {
-                                        idx,
-                                        spawn_next: true,
-                                    });
-                                }
-                                if request_delete {
-                                    request_delete_confirm = true;
-                                }
-                            }
-                        });
+                    ui.add_space(side);
                 });
             });
 

@@ -26,6 +26,7 @@ autosave_enabled = true
 autosave_interval_ms = 10000
 nav_width = 280.0
 inspector_width = 360.0
+inspector_max_width = 560.0
 
 [plot]
 # Reserved for upcoming plot interception / rendering tuning.

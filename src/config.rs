@@ -44,6 +44,11 @@ impl AppConfig {
         if self.ui.font_scale <= 0.0 {
             return Err(anyhow!("ui.font_scale must be > 0"));
         }
+        if self.ui.inspector_max_width < self.ui.inspector_width {
+            return Err(anyhow!(
+                "ui.inspector_max_width must be >= ui.inspector_width"
+            ));
+        }
         Ok(())
     }
 }
@@ -141,6 +146,8 @@ pub struct UiConfig {
     pub nav_width: f32,
     #[serde(default = "default_inspector_width")]
     pub inspector_width: f32,
+    #[serde(default = "default_inspector_max_width")]
+    pub inspector_max_width: f32,
 }
 
 fn default_font_scale() -> f32 {
@@ -165,6 +172,10 @@ fn default_nav_width() -> f32 {
 
 fn default_inspector_width() -> f32 {
     360.0
+}
+
+fn default_inspector_max_width() -> f32 {
+    560.0
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -199,6 +210,7 @@ impl Default for UiConfig {
             autosave_interval_ms: default_autosave_interval_ms(),
             nav_width: default_nav_width(),
             inspector_width: default_inspector_width(),
+            inspector_max_width: default_inspector_max_width(),
         }
     }
 }
@@ -335,6 +347,7 @@ mod tests {
                 theme: Theme::default(),
                 nav_width: default_nav_width(),
                 inspector_width: default_inspector_width(),
+                inspector_max_width: default_inspector_max_width(),
             },
             plot: PlotConfig::default(),
         };

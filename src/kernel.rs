@@ -6,9 +6,10 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use tracing::{debug, info, instrument};
 use wolfram_app_discovery::WolframApp;
-use wolfram_expr::{Expr, ExprKind, Symbol};
+use wolfram_expr::{Expr, Symbol};
 use wstp::{Link, Protocol, sys};
 
 use crate::config::KernelConfig;
@@ -62,6 +63,12 @@ impl KernelSession {
     }
 
     #[instrument(skip_all)]
+    pub fn restart_with_current_config(&mut self) -> anyhow::Result<()> {
+        let cfg = self.config.clone();
+        self.restart(&cfg)
+    }
+
+    #[instrument(skip_all)]
     pub fn abort(&mut self) -> anyhow::Result<()> {
         use wstp::UrgentMessage;
         self.link
@@ -84,27 +91,27 @@ impl KernelSession {
             .checked_add(Duration::from_millis(self.config.eval_timeout_ms))
             .expect("deadline overflow");
 
-        // Important: we stringify inside the kernel, so we never have to round-trip an arbitrary
-        // `Expr` back into WSTP (which can fail if symbol contexts are missing).
-        let to_expression = Expr::normal(
-            Symbol::new("System`ToExpression"),
-            vec![Expr::string(wl_input)],
+        // IMPORTANT:
+        // The kernel can emit relative symbols (without contexts) inside packets like MESSAGEPKT.
+        // The `wstp` crate rejects those when parsing into `Expr`, which can poison the link.
+        //
+        // Strategy:
+        // - Ask the kernel to return a single JSON *string* for every evaluation.
+        // - Use Quiet + $MessageList to avoid MESSAGEPKT and capture messages ourselves.
+        // - Prefer reading RETURNPKT as a raw string (no symbol parsing).
+        let wl = format!(
+            "Block[{{$MessageList={{}}}}, \
+             Module[{{res}}, \
+               res = Quiet[Check[ToExpression[\"{input}\"], $Failed], All]; \
+               ExportString[<|\
+                 \"output\" -> ToString[res, InputForm], \
+                 \"raw\" -> ToString[res, FullForm], \
+                 \"messages\" -> (ToString[#, InputForm] & /@ $MessageList)\
+               |>, \"JSON\"]\
+             ]]",
+            input = wl_escape_string(wl_input),
         );
-        let input_form_string = Expr::normal(
-            Symbol::new("System`ToString"),
-            vec![
-                to_expression.clone(),
-                Expr::symbol(Symbol::new("System`InputForm")),
-            ],
-        );
-        let full_form_string = Expr::normal(
-            Symbol::new("System`ToString"),
-            vec![to_expression, Expr::symbol(Symbol::new("System`FullForm"))],
-        );
-        let expr = Expr::normal(
-            Symbol::new("System`List"),
-            vec![input_form_string, full_form_string],
-        );
+        let expr = Expr::normal(Symbol::new("System`ToExpression"), vec![Expr::string(wl)]);
 
         self.link
             .put_eval_packet(&expr)
@@ -115,32 +122,50 @@ impl KernelSession {
 
         loop {
             wait_until(&mut self.link, deadline).context("wait for kernel activity")?;
-            let pkt = self.link.raw_next_packet().map_err(|e| anyhow!("{e:?}"))?;
+            let pkt = match self.link.raw_next_packet() {
+                Ok(pkt) => pkt,
+                Err(e) => {
+                    let _ = self.link.new_packet();
+                    return Err(anyhow!("{e:?}"));
+                }
+            };
 
             match pkt {
                 sys::RETURNPKT => {
-                    let result = self.link.get_expr().map_err(|e| anyhow!("{e:?}"))?;
-                    let (output_text, raw_expr) = match result.kind() {
-                        ExprKind::Normal(n)
-                            if n.has_head(&Symbol::new("System`List"))
-                                && n.elements().len() == 2 =>
-                        {
-                            let elems = n.elements();
-                            let out = match elems[0].kind() {
-                                ExprKind::String(s) => s.as_str().to_string(),
-                                _ => format!("{:?}", &elems[0]),
-                            };
-                            let raw = match elems[1].kind() {
-                                ExprKind::String(s) => Some(s.as_str().to_string()),
-                                _ => Some(format!("{:?}", &elems[1])),
-                            };
-                            (out, raw)
+                    // The wrapper always returns a single JSON string. If we can't read a string
+                    // token here, something has gone badly wrong; fail fast (but still try to
+                    // advance packets so the session doesn't get stuck).
+                    let json = match self.link.get_string() {
+                        Ok(s) => s,
+                        Err(e) => {
+                            let _ = self.link.new_packet();
+                            return Err(anyhow!("{e:?}"));
                         }
-                        ExprKind::String(s) => (s.as_str().to_string(), None),
-                        _ => (format!("{result:?}"), Some(format!("{result:?}"))),
                     };
 
                     self.link.new_packet().map_err(|e| anyhow!("{e:?}"))?;
+
+                    let decoded: JsonValue = serde_json::from_str(&json).with_context(|| {
+                        format!(
+                            "kernel returned non-JSON string: {}",
+                            truncate_for_log(&json)
+                        )
+                    })?;
+
+                    let output_text = decoded
+                        .get("output")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let raw_expr = decoded
+                        .get("raw")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    if let Some(arr) = decoded.get("messages").and_then(|v| v.as_array()) {
+                        for m in arr.iter().filter_map(|v| v.as_str()) {
+                            messages.push(m.to_string());
+                        }
+                    }
 
                     info!(
                         eval_id,
@@ -158,16 +183,12 @@ impl KernelSession {
                 sys::TEXTPKT | sys::RETURNTEXTPKT => {
                     if let Ok(s) = self.link.get_string() {
                         messages.push(s);
-                    } else {
-                        messages.push("<text packet decode error>".to_string());
                     }
                     self.link.new_packet().map_err(|e| anyhow!("{e:?}"))?;
                 }
                 sys::MESSAGEPKT => {
-                    // MESSAGEPKT structure: MessagePacket[symbol, messageName]
-                    // We'll read it as a generic Expr and debug-print it.
-                    let msg = self.link.get_expr().map_err(|e| anyhow!("{e:?}"))?;
-                    messages.push(format!("{msg:?}"));
+                    // Avoid parsing MESSAGEPKT (it may contain relative symbols).
+                    // We rely on Quiet + $MessageList in the RETURNPKT payload instead.
                     self.link.new_packet().map_err(|e| anyhow!("{e:?}"))?;
                 }
                 sys::INPUTNAMEPKT
@@ -193,6 +214,23 @@ impl KernelSession {
 
         // Unreachable: the kernel is expected to eventually send RETURNPKT for an evaluation.
         // If it doesn't, `wait_until` will time out and return an error.
+    }
+}
+
+fn wl_escape_string(s: &str) -> String {
+    // Minimal escaping for embedding into a Wolfram Language string literal.
+    s.replace('\\', "\\\\")
+        .replace('\"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "")
+}
+
+fn truncate_for_log(s: &str) -> String {
+    const MAX: usize = 400;
+    if s.len() <= MAX {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..MAX])
     }
 }
 
