@@ -278,14 +278,17 @@ impl Tab {
         }
     }
 
+    #[allow(dead_code)]
     fn select_all(&mut self) {
         self.selection = self.groups.iter().map(|g| g.id).collect();
     }
 
+    #[allow(dead_code)]
     fn select_none(&mut self) {
         self.selection.clear();
     }
 
+    #[allow(dead_code)]
     fn invert_selection(&mut self) {
         let mut next = BTreeSet::new();
         for g in &self.groups {
@@ -338,6 +341,7 @@ impl Tab {
         self.dirty = true;
     }
 
+    #[allow(dead_code)]
     fn clear_outputs_selected(&mut self) {
         for g in &mut self.groups {
             if self.selection.contains(&g.id) {
@@ -349,6 +353,7 @@ impl Tab {
         self.dirty = true;
     }
 
+    #[allow(dead_code)]
     fn move_selected_block(&mut self, delta: isize) {
         let selected = self.selected_indices_in_order();
         if selected.is_empty() {
@@ -940,10 +945,10 @@ impl eframe::App for WovenApp {
         let mut menu_actions: Vec<&'static str> = Vec::new();
 
         // Top bar
-        egui::TopBottomPanel::top("top_bar")
-            .exact_height(44.0)
+        egui::Panel::top("top_bar")
+            .exact_size(44.0)
             .frame(
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(palette.panel)
                     .stroke(palette.subtle_stroke),
             )
@@ -967,7 +972,7 @@ impl eframe::App for WovenApp {
 
                     ui.add_space(8.0);
 
-                    egui::ComboBox::from_id_source("tab_select")
+                    egui::ComboBox::from_id_salt("tab_select")
                         .selected_text(self.tabs[self.active_tab].title.clone())
                         .show_ui(ui, |ui| {
                             for i in 0..self.tabs.len() {
@@ -1016,78 +1021,78 @@ impl eframe::App for WovenApp {
                             ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
                         ui.painter().circle_filled(rect.center(), 6.0, dot);
 
-                        egui::menu::bar(ui, |ui| {
+                        egui::MenuBar::new().ui(ui, |ui| {
                             ui.menu_button("File", |ui| {
                                 if ui.button("New Tab (Ctrl+N)").clicked() {
                                     menu_actions.push("new_tab");
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                                 if ui.button("Close Tab (Ctrl+W)").clicked() {
                                     menu_actions.push("close_tab");
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                                 ui.separator();
                                 if ui.button("Save (Ctrl+S)").clicked() {
                                     menu_actions.push("save");
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                                 if ui.button("Save All").clicked() {
                                     menu_actions.push("save_all");
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             });
 
                             ui.menu_button("Edit", |ui| {
                                 if ui.button("New Cell").clicked() {
                                     menu_actions.push("new_cell");
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                                 if ui.button("Delete Selected…").clicked() {
                                     menu_actions.push("delete_selected");
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                                 ui.separator();
                                 if ui.button("Copy selection as text").clicked() {
                                     menu_actions.push("copy_text");
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                                 if ui.button("Copy selection as JSON").clicked() {
                                     menu_actions.push("copy_json");
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                                 if ui.button("Paste").clicked() {
                                     menu_actions.push("paste");
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                                 if ui.button("Duplicate Selected").clicked() {
                                     menu_actions.push("duplicate");
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             });
 
                             ui.menu_button("Kernel", |ui| {
                                 if ui.button("Evaluate selection (Ctrl+Enter)").clicked() {
                                     menu_actions.push("eval_selection");
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                                 if ui.button("Evaluate visible (Ctrl+Shift+Enter)").clicked() {
                                     menu_actions.push("eval_visible");
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                                 if ui.button("Abort").clicked() {
                                     menu_actions.push("abort");
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                                 if ui.button("Restart kernel").clicked() {
                                     menu_actions.push("restart_kernel");
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             });
 
                             ui.menu_button("View", |ui| {
                                 if ui.button("Command palette (Ctrl+P)").clicked() {
                                     menu_actions.push("palette");
-                                    ui.close_menu();
+                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                             });
                         });
@@ -1179,12 +1184,12 @@ impl eframe::App for WovenApp {
 
         // Left navigator
         if self.show_navigator {
-            egui::SidePanel::left("navigator")
+            egui::Panel::left("navigator")
                 .resizable(true)
-                .default_width(self.config.ui.nav_width)
-                .min_width(240.0)
+                .default_size(self.config.ui.nav_width)
+                .min_size(240.0)
                 .frame(
-                    egui::Frame::none()
+                    egui::Frame::NONE
                         .fill(palette.panel_alt)
                         .stroke(palette.subtle_stroke),
                 )
@@ -1264,7 +1269,11 @@ impl eframe::App for WovenApp {
                                 } else {
                                     egui::Color32::from_rgb(40, 170, 80)
                                 };
-                                ui.colored_label(dot, "●");
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(14.0, 14.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().circle_filled(rect.center(), 6.0, dot);
                                 ui.label("Kernel status");
                             });
                             if ui.button("Restart kernel").clicked() {
@@ -1278,12 +1287,12 @@ impl eframe::App for WovenApp {
 
         // Right inspector
         if self.show_inspector {
-            egui::SidePanel::right("inspector")
+            egui::Panel::right("inspector")
                 .resizable(true)
-                .default_width(self.config.ui.inspector_width)
-                .min_width(260.0)
+                .default_size(self.config.ui.inspector_width)
+                .min_size(260.0)
                 .frame(
-                    egui::Frame::none()
+                    egui::Frame::NONE
                         .fill(palette.panel_alt)
                         .stroke(palette.subtle_stroke),
                 )
@@ -1390,7 +1399,7 @@ impl eframe::App for WovenApp {
 
         // Central notebook
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(palette.background))
+            .frame(egui::Frame::NONE.fill(palette.background))
             .show_inside(ui, |ui| {
                 if let Some(err) = last_error.as_deref() {
                     ui.add_space(6.0);
@@ -1445,7 +1454,7 @@ impl eframe::App for WovenApp {
                                 let mut request_eval = false;
                                 let mut request_delete = false;
 
-                                let frame = egui::Frame::none()
+                                let frame = egui::Frame::NONE
                                     .fill(palette.card)
                                     .stroke(if is_selected {
                                         egui::Stroke::new(1.5, accent)
@@ -1633,11 +1642,11 @@ impl eframe::App for WovenApp {
                                 inner.response.context_menu(|ui| {
                                     if ui.button("Evaluate").clicked() {
                                         request_eval = true;
-                                        ui.close_menu();
+                                        ui.close_kind(egui::UiKind::Menu);
                                     }
                                     if ui.button("Delete selected…").clicked() {
                                         request_delete = true;
-                                        ui.close_menu();
+                                        ui.close_kind(egui::UiKind::Menu);
                                     }
                                 });
 
@@ -1661,7 +1670,7 @@ impl eframe::App for WovenApp {
 
         if let Some(p) = open_notebook.take() {
             if let Err(err) = self.open_notebook_in_new_tab(p) {
-                last_error = Some(format!("open notebook failed: {err:#}"));
+                error!(error = %err, "open notebook failed");
             }
         }
 
@@ -1849,23 +1858,6 @@ fn is_plot_like(output: &EvalResult) -> bool {
     ];
 
     needles.iter().any(|n| s.starts_with(n) || raw.contains(n))
-}
-
-fn preview_title(input: &str) -> String {
-    let s = input.lines().next().unwrap_or("").trim();
-    if s.is_empty() {
-        "(empty)".to_string()
-    } else {
-        s.chars().take(32).collect()
-    }
-}
-
-fn format_input(input: &str) -> String {
-    input
-        .lines()
-        .map(|l| l.trim_end())
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn truncate_str(s: &str, max: usize) -> &str {
