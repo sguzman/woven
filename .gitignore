@@ -2,3 +2,4 @@
 logs
 .cache
 tmp
+config/woven.local.toml

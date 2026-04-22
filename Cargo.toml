@@ -4,3 +4,18 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1.0.99"
+config = "0.15.22"
+eframe = "0.34.1"
+egui_plot = "0.35.0"
+serde = { version = "1.0.219", features = ["derive"] }
+toml = "0.9.7"
+tracing = "0.1.41"
+tracing-appender = "0.2.3"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
+wolfram-expr = "0.1.4"
+wstp = "0.2.9"
+wolfram-app-discovery = "0.4.9"
+
+[dev-dependencies]
+tempfile = "3.22.0"

@@ -1,0 +1,25 @@
+mode = "dev"
+
+[logging]
+level = "info"
+
+[logging.file]
+# In `dev` mode, file logging is enabled by default.
+enabled = true
+# Log file path. Relative paths are resolved relative to the repo root.
+path = "logs/woven.log"
+# Rolling policy: "daily" or "never" (single file).
+rolling = "daily"
+
+[kernel]
+# Optional path to a WolframKernel executable. If omitted, Woven will auto-discover.
+path = ""
+start_timeout_ms = 20000
+eval_timeout_ms = 60000
+
+[ui]
+font_scale = 1.0
+
+[plot]
+# Reserved for upcoming plot interception / rendering tuning.
+placeholder_enabled = true
