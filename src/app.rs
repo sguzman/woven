@@ -119,8 +119,17 @@ struct Tab {
     filter_messages_only: bool,
     show_palette: bool,
 
+    // Documentation browser state
+    doc_query: String,
+    doc_results: Vec<String>,
+    doc_selected: Option<String>,
+    doc_content: String,
+    doc_error: Option<String>,
+    doc_jobs: VecDeque<DocJob>,
+    doc_eval_counter: u64,
+
     // Execution flow
-    eval_queue: VecDeque<usize>,
+    eval_queue: VecDeque<EvalJob>,
     last_rerun: Option<usize>,
 
     // Autosave
@@ -128,6 +137,21 @@ struct Tab {
 
     // Internal clipboard (cross-platform; we still write to system clipboard for convenience).
     internal_clipboard: Option<String>,
+
+    // Focus management (e.g. after auto-inserting a new cell).
+    focus_input_group_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EvalJob {
+    idx: usize,
+    spawn_next: bool,
+}
+
+#[derive(Debug, Clone)]
+enum DocJob {
+    Search(String),
+    Fetch(String),
 }
 
 impl Tab {
@@ -463,27 +487,37 @@ impl Tab {
             indices.push(self.selected);
         }
         for idx in indices {
-            self.eval_queue.push_back(idx);
+            self.eval_queue.push_back(EvalJob {
+                idx,
+                spawn_next: false,
+            });
         }
     }
 
     fn enqueue_eval_all_visible(&mut self) {
         for idx in self.visible_indices() {
-            self.eval_queue.push_back(idx);
+            self.eval_queue.push_back(EvalJob {
+                idx,
+                spawn_next: false,
+            });
         }
     }
 
     fn enqueue_eval_all_groups(&mut self) {
         for idx in 0..self.groups.len() {
-            self.eval_queue.push_back(idx);
+            self.eval_queue.push_back(EvalJob {
+                idx,
+                spawn_next: false,
+            });
         }
     }
 
-    fn tick_eval_queue(&mut self, max_per_frame: usize) {
+    fn tick_eval_queue(&mut self, max_per_frame: usize, next_id: &mut u64) {
         for _ in 0..max_per_frame {
-            let Some(idx) = self.eval_queue.pop_front() else {
+            let Some(job) = self.eval_queue.pop_front() else {
                 return;
             };
+            let idx = job.idx;
             self.set_selected(idx);
             if let Some(group) = self.groups.get_mut(idx) {
                 group.status = CellStatus::Running;
@@ -508,6 +542,7 @@ impl Tab {
                         group.last_duration = Some(duration);
                     }
                     self.last_rerun = Some(idx);
+                    self.dirty = true;
                 }
                 Err(err) => {
                     error!(tab_id = self.id, group_id = %self.groups[idx].id, error = %err, "eval failed");
@@ -516,6 +551,137 @@ impl Tab {
                         group.last_duration = Some(duration);
                     }
                     self.last_rerun = Some(idx);
+                    self.dirty = true;
+                }
+            }
+
+            // Interaction-first behavior: after a manual single-cell evaluation, ensure an empty
+            // input cell exists immediately below and move focus there.
+            if job.spawn_next && self.eval_queue.is_empty() {
+                self.ensure_next_input_cell(idx, next_id);
+            }
+        }
+    }
+
+    fn ensure_next_input_cell(&mut self, idx: usize, next_id: &mut u64) {
+        let insert_at = idx.saturating_add(1).min(self.groups.len());
+
+        let reuse_next = self
+            .groups
+            .get(insert_at)
+            .is_some_and(|next| next.input.trim().is_empty() && next.output.is_none());
+        if reuse_next {
+            let id = self.groups[insert_at].id;
+            self.set_selected(insert_at);
+            self.selection.clear();
+            self.selection.insert(id);
+            self.selection_anchor = Some(insert_at);
+            self.focus_input_group_id = Some(id);
+            return;
+        }
+
+        let id = *next_id;
+        *next_id += 1;
+        self.groups.insert(
+            insert_at,
+            CellGroup {
+                id,
+                input: String::new(),
+                output: None,
+                collapsed: false,
+                bookmarked: false,
+                tags: Vec::new(),
+                status: CellStatus::Idle,
+                last_duration: None,
+            },
+        );
+        self.set_selected(insert_at);
+        self.selection.clear();
+        self.selection.insert(id);
+        self.selection_anchor = Some(insert_at);
+        self.focus_input_group_id = Some(id);
+        self.dirty = true;
+    }
+
+    fn enqueue_doc_search(&mut self) {
+        let q = self.doc_query.trim().to_string();
+        if q.is_empty() {
+            return;
+        }
+        self.doc_jobs.push_back(DocJob::Search(q));
+    }
+
+    fn enqueue_doc_fetch(&mut self, symbol: String) {
+        self.doc_jobs.push_back(DocJob::Fetch(symbol));
+    }
+
+    fn tick_doc_jobs(&mut self, max_per_frame: usize) {
+        for _ in 0..max_per_frame {
+            let Some(job) = self.doc_jobs.pop_front() else {
+                return;
+            };
+
+            match job {
+                DocJob::Search(q) => {
+                    self.doc_error = None;
+                    let wl = format!(
+                        "ExportString[Take[Sort[Names[\"*\"<>\"{q}\"<>\"*\"]], UpTo[50]], \"JSON\"]",
+                        q = wl_escape_string(&q)
+                    );
+                    let eval_id = self.id * 1_000_000 + 900_000 + self.doc_eval_counter;
+                    self.doc_eval_counter = self.doc_eval_counter.wrapping_add(1);
+
+                    match self.kernel.evaluate(eval_id, &wl) {
+                        Ok(out) => {
+                            let json = unquote_json_string(&out.output_text);
+                            match serde_json::from_str::<Vec<String>>(&json) {
+                                Ok(mut results) => {
+                                    results.truncate(50);
+                                    self.doc_results = results;
+                                    self.doc_selected = None;
+                                    self.doc_content.clear();
+                                }
+                                Err(err) => {
+                                    self.doc_error = Some(format!(
+                                        "failed to parse search results: {err} (raw: {json})"
+                                    ));
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            self.doc_error = Some(format!("doc search failed: {err:#}"));
+                        }
+                    }
+                }
+                DocJob::Fetch(sym) => {
+                    self.doc_error = None;
+                    let wl = format!(
+                        "ExportString[With[{{s=\"{s}\"}},<|\"Name\"->s,\"Context\"->Quiet@Check[Context[Symbol[s]],\"\"],\"Usage\"->Quiet@Check[Information[Symbol[s],\"Usage\"],\"\"]|>],\"JSON\"]",
+                        s = wl_escape_string(&sym)
+                    );
+                    let eval_id = self.id * 1_000_000 + 910_000 + self.doc_eval_counter;
+                    self.doc_eval_counter = self.doc_eval_counter.wrapping_add(1);
+
+                    match self.kernel.evaluate(eval_id, &wl) {
+                        Ok(out) => {
+                            let json = unquote_json_string(&out.output_text);
+                            match serde_json::from_str::<serde_json::Value>(&json) {
+                                Ok(v) => {
+                                    self.doc_selected = Some(sym);
+                                    self.doc_content =
+                                        serde_json::to_string_pretty(&v).unwrap_or_else(|_| json);
+                                }
+                                Err(err) => {
+                                    self.doc_error = Some(format!(
+                                        "failed to parse documentation page: {err} (raw: {json})"
+                                    ));
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            self.doc_error = Some(format!("doc fetch failed: {err:#}"));
+                        }
+                    }
                 }
             }
         }
@@ -562,10 +728,18 @@ impl WovenApp {
             filter_errors_only: false,
             filter_messages_only: false,
             show_palette: false,
+            doc_query: String::new(),
+            doc_results: Vec::new(),
+            doc_selected: None,
+            doc_content: String::new(),
+            doc_error: None,
+            doc_jobs: VecDeque::new(),
+            doc_eval_counter: 0,
             eval_queue: VecDeque::new(),
             last_rerun: None,
             last_autosave_at: Instant::now(),
             internal_clipboard: None,
+            focus_input_group_id: None,
         };
 
         let mut next_group_id = 1;
@@ -621,10 +795,18 @@ impl WovenApp {
             filter_errors_only: false,
             filter_messages_only: false,
             show_palette: false,
+            doc_query: String::new(),
+            doc_results: Vec::new(),
+            doc_selected: None,
+            doc_content: String::new(),
+            doc_error: None,
+            doc_jobs: VecDeque::new(),
+            doc_eval_counter: 0,
             eval_queue: VecDeque::new(),
             last_rerun: None,
             last_autosave_at: Instant::now(),
             internal_clipboard: None,
+            focus_input_group_id: None,
         };
         tab.ensure_one_group(&mut self.next_group_id);
         self.tabs.push(tab);
@@ -657,10 +839,18 @@ impl WovenApp {
             filter_errors_only: false,
             filter_messages_only: false,
             show_palette: false,
+            doc_query: String::new(),
+            doc_results: Vec::new(),
+            doc_selected: None,
+            doc_content: String::new(),
+            doc_error: None,
+            doc_jobs: VecDeque::new(),
+            doc_eval_counter: 0,
             eval_queue: VecDeque::new(),
             last_rerun: None,
             last_autosave_at: Instant::now(),
             internal_clipboard: None,
+            focus_input_group_id: None,
         };
 
         if let Err(err) = tab.load_notebook(&mut self.next_group_id) {
@@ -736,7 +926,10 @@ impl eframe::App for WovenApp {
         }
 
         // Drive a tiny "queue" by doing at most one eval per frame.
-        self.active_tab_mut().tick_eval_queue(1);
+        let active = self.active_tab;
+        let (tabs, next_id) = (&mut self.tabs, &mut self.next_group_id);
+        tabs[active].tick_eval_queue(1, next_id);
+        tabs[active].tick_doc_jobs(1);
 
         let theme = self.config.ui.theme;
         let dark = theme == Theme::Dark;
@@ -757,10 +950,18 @@ impl eframe::App for WovenApp {
             .show_inside(ui, |ui| {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui.button("≡").on_hover_text("Toggle navigator").clicked() {
+                    if ui
+                        .button("Menu")
+                        .on_hover_text("Toggle navigator")
+                        .clicked()
+                    {
                         self.show_navigator = !self.show_navigator;
                     }
-                    if ui.button("⟷").on_hover_text("Toggle inspector").clicked() {
+                    if ui
+                        .button("Inspector")
+                        .on_hover_text("Toggle inspector")
+                        .clicked()
+                    {
                         self.show_inspector = !self.show_inspector;
                     }
 
@@ -783,7 +984,7 @@ impl eframe::App for WovenApp {
                         });
 
                     if self.tabs[self.active_tab].dirty {
-                        ui.label("•");
+                        ui.label("*");
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -805,13 +1006,15 @@ impl eframe::App for WovenApp {
                         if ui.button("Run All").clicked() {
                             menu_actions.push("run_all");
                         }
-
+                        // Kernel status indicator (painted circle to avoid missing-glyph squares).
                         let dot = if dark {
                             egui::Color32::from_rgb(90, 210, 120)
                         } else {
                             egui::Color32::from_rgb(40, 170, 80)
                         };
-                        ui.colored_label(dot, "●");
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                        ui.painter().circle_filled(rect.center(), 6.0, dot);
 
                         egui::menu::bar(ui, |ui| {
                             ui.menu_button("File", |ui| {
@@ -1129,9 +1332,57 @@ impl eframe::App for WovenApp {
                                 });
                         }
                         InspectorTab::Documentation => {
-                            ui.label("Reserved: documentation lookup.");
+                            let tab = &mut self.tabs[active];
+                            ui.label("Documentation");
+                            ui.add_space(6.0);
+
+                            ui.horizontal(|ui| {
+                                let resp = ui.add(
+                                    egui::TextEdit::singleline(&mut tab.doc_query)
+                                        .hint_text("Search symbols (e.g. Plot, Integrate)…")
+                                        .desired_width(f32::INFINITY),
+                                );
+                                if resp.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                {
+                                    tab.enqueue_doc_search();
+                                }
+                                if ui.button("Search").clicked() {
+                                    tab.enqueue_doc_search();
+                                }
+                            });
+
+                            if let Some(err) = tab.doc_error.as_deref() {
+                                ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
+                            }
+
                             ui.separator();
-                            ui.label("Tip: Use Ctrl+P for command palette.");
+
+                            ui.label("Results");
+                            egui::ScrollArea::vertical()
+                                .max_height(180.0)
+                                .show(ui, |ui| {
+                                    for sym in tab.doc_results.clone() {
+                                        let selected =
+                                            tab.doc_selected.as_deref() == Some(sym.as_str());
+                                        if ui.selectable_label(selected, &sym).clicked() {
+                                            tab.enqueue_doc_fetch(sym);
+                                        }
+                                    }
+                                });
+
+                            ui.separator();
+                            ui.label("Page");
+                            if tab.doc_content.trim().is_empty() {
+                                ui.label("Search to view symbol usage and context.");
+                            } else {
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut tab.doc_content)
+                                        .font(egui::TextStyle::Monospace)
+                                        .desired_rows(18)
+                                        .interactive(false),
+                                );
+                            }
                         }
                     }
                 });
@@ -1188,19 +1439,21 @@ impl eframe::App for WovenApp {
                                 let accent = group_accent_color(&tab.groups[idx]);
                                 let is_selected = idx == tab.selected;
                                 let is_checked = tab.selection.contains(&group_id);
+                                let input_blue = egui::Color32::from_rgb(80, 160, 255);
+                                let output_green = egui::Color32::from_rgb(90, 210, 120);
 
                                 let mut request_eval = false;
                                 let mut request_delete = false;
 
-                            let frame = egui::Frame::none()
-                                .fill(palette.card)
-                                .stroke(if is_selected {
-                                    egui::Stroke::new(1.5, accent)
-                                } else {
-                                    palette.subtle_stroke
-                                })
-                                .corner_radius(egui::CornerRadius::same(10))
-                                .inner_margin(egui::Margin::symmetric(14, 12));
+                                let frame = egui::Frame::none()
+                                    .fill(palette.card)
+                                    .stroke(if is_selected {
+                                        egui::Stroke::new(1.5, accent)
+                                    } else {
+                                        palette.subtle_stroke
+                                    })
+                                    .corner_radius(egui::CornerRadius::same(10))
+                                    .inner_margin(egui::Margin::symmetric(14, 12));
 
                                 let inner = frame.show(ui, |ui| {
                                     ui.set_width(ui.available_width());
@@ -1226,7 +1479,7 @@ impl eframe::App for WovenApp {
                                                 tab.selection_anchor = Some(idx);
                                             }
 
-                                            let run = ui.button("▶").on_hover_text("Evaluate");
+                                            let run = ui.button("Run").on_hover_text("Evaluate");
                                             if run.clicked() {
                                                 tab.set_selected(idx);
                                                 request_eval = true;
@@ -1240,14 +1493,14 @@ impl eframe::App for WovenApp {
                                                 CellStatus::Error => {
                                                     ui.colored_label(
                                                         egui::Color32::from_rgb(220, 80, 80),
-                                                        "!",
+                                                        "ERR",
                                                     );
                                                 }
                                                 CellStatus::Idle => {
                                                     if tab.groups[idx].output.is_some() {
                                                         ui.colored_label(
                                                             egui::Color32::from_rgb(90, 210, 120),
-                                                            "✓",
+                                                            "OK",
                                                         );
                                                     } else {
                                                         ui.label("");
@@ -1262,14 +1515,22 @@ impl eframe::App for WovenApp {
                                             let group = &mut tab.groups[idx];
                                             let desired_rows =
                                                 group.input.lines().count().clamp(1, 12);
+                                            let input_id = egui::Id::new(("cell_input", group.id));
+                                            if tab.focus_input_group_id == Some(group.id) {
+                                                ui.ctx()
+                                                    .memory_mut(|mem| mem.request_focus(input_id));
+                                                tab.focus_input_group_id = None;
+                                            }
                                             let resp = ui.add(
                                                 egui::TextEdit::multiline(&mut group.input)
-                                                .font(egui::TextStyle::Monospace)
-                                                .desired_rows(desired_rows)
-                                                .desired_width(f32::INFINITY)
-                                                .frame(egui::Frame::NONE)
-                                                .hint_text("Wolfram Language input…"),
-                                        );
+                                                    .font(egui::TextStyle::Monospace)
+                                                    .text_color(input_blue)
+                                                    .desired_rows(desired_rows)
+                                                    .desired_width(f32::INFINITY)
+                                                    .frame(egui::Frame::NONE)
+                                                    .id(input_id)
+                                                    .hint_text("Wolfram Language input…"),
+                                            );
                                             if resp.changed() {
                                                 tab.dirty = true;
                                             }
@@ -1287,7 +1548,8 @@ impl eframe::App for WovenApp {
                                                     if !output_text.trim().is_empty() {
                                                         ui.label(
                                                             egui::RichText::new(output_text)
-                                                                .size(20.0),
+                                                                .size(20.0)
+                                                                .color(output_green),
                                                         );
                                                     }
 
@@ -1330,8 +1592,11 @@ impl eframe::App for WovenApp {
                                             egui::Layout::right_to_left(egui::Align::TOP),
                                             |ui| {
                                                 let group = &mut tab.groups[idx];
-                                                let icon =
-                                                    if group.collapsed { "▸" } else { "▾" };
+                                                let icon = if group.collapsed {
+                                                    "Expand"
+                                                } else {
+                                                    "Collapse"
+                                                };
                                                 if ui
                                                     .button(icon)
                                                     .on_hover_text("Collapse/expand output")
@@ -1340,13 +1605,12 @@ impl eframe::App for WovenApp {
                                                     group.collapsed = !group.collapsed;
                                                     tab.dirty = true;
                                                 }
-                                                let star =
-                                                    if group.bookmarked { "★" } else { "☆" };
-                                                if ui
-                                                    .button(star)
-                                                    .on_hover_text("Bookmark")
-                                                    .clicked()
-                                                {
+                                                let bookmark = if group.bookmarked {
+                                                    "Bookmarked"
+                                                } else {
+                                                    "Bookmark"
+                                                };
+                                                if ui.button(bookmark).clicked() {
                                                     group.bookmarked = !group.bookmarked;
                                                     tab.dirty = true;
                                                 }
@@ -1360,11 +1624,11 @@ impl eframe::App for WovenApp {
                                     rect.min,
                                     egui::pos2(rect.min.x + 6.0, rect.max.y),
                                 );
-                            ui.painter().rect_filled(
-                                stripe,
-                                egui::CornerRadius::same(10),
-                                accent,
-                            );
+                                ui.painter().rect_filled(
+                                    stripe,
+                                    egui::CornerRadius::same(10),
+                                    accent,
+                                );
 
                                 inner.response.context_menu(|ui| {
                                     if ui.button("Evaluate").clicked() {
@@ -1378,7 +1642,10 @@ impl eframe::App for WovenApp {
                                 });
 
                                 if request_eval {
-                                    tab.eval_queue.push_back(idx);
+                                    tab.eval_queue.push_back(EvalJob {
+                                        idx,
+                                        spawn_next: true,
+                                    });
                                 }
                                 if request_delete {
                                     request_delete_confirm = true;
@@ -1554,13 +1821,13 @@ fn autosave_path(path: &Path) -> PathBuf {
 
 fn group_accent_color(group: &CellGroup) -> egui::Color32 {
     match group.status {
-        CellStatus::Running => egui::Color32::from_rgb(80, 160, 255),
         CellStatus::Error => egui::Color32::from_rgb(220, 80, 80),
+        CellStatus::Running => egui::Color32::from_rgb(80, 160, 255),
         CellStatus::Idle => {
             if group.output.is_some() {
-                egui::Color32::from_rgb(90, 210, 120)
+                egui::Color32::from_rgb(90, 210, 120) // output
             } else {
-                egui::Color32::from_rgb(80, 160, 255)
+                egui::Color32::from_rgb(80, 160, 255) // input
             }
         }
     }
@@ -1603,4 +1870,22 @@ fn format_input(input: &str) -> String {
 
 fn truncate_str(s: &str, max: usize) -> &str {
     if s.len() <= max { s } else { &s[..max] }
+}
+
+fn wl_escape_string(s: &str) -> String {
+    // Minimal escaping for embedding into a Wolfram Language string literal.
+    s.replace('\\', "\\\\")
+        .replace('\"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "")
+}
+
+fn unquote_json_string(s: &str) -> String {
+    let t = s.trim();
+    if t.starts_with('"') && t.ends_with('"') {
+        if let Ok(decoded) = serde_json::from_str::<String>(t) {
+            return decoded;
+        }
+    }
+    t.to_string()
 }

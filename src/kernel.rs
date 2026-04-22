@@ -6,9 +6,9 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, info, instrument};
 use wolfram_app_discovery::WolframApp;
-use wolfram_expr::{Expr, Symbol};
+use wolfram_expr::{Expr, ExprKind, Symbol};
 use wstp::{Link, Protocol, sys};
 
 use crate::config::KernelConfig;
@@ -84,9 +84,26 @@ impl KernelSession {
             .checked_add(Duration::from_millis(self.config.eval_timeout_ms))
             .expect("deadline overflow");
 
-        let expr = Expr::normal(
+        // Important: we stringify inside the kernel, so we never have to round-trip an arbitrary
+        // `Expr` back into WSTP (which can fail if symbol contexts are missing).
+        let to_expression = Expr::normal(
             Symbol::new("System`ToExpression"),
             vec![Expr::string(wl_input)],
+        );
+        let input_form_string = Expr::normal(
+            Symbol::new("System`ToString"),
+            vec![
+                to_expression.clone(),
+                Expr::symbol(Symbol::new("System`InputForm")),
+            ],
+        );
+        let full_form_string = Expr::normal(
+            Symbol::new("System`ToString"),
+            vec![to_expression, Expr::symbol(Symbol::new("System`FullForm"))],
+        );
+        let expr = Expr::normal(
+            Symbol::new("System`List"),
+            vec![input_form_string, full_form_string],
         );
 
         self.link
@@ -103,13 +120,25 @@ impl KernelSession {
             match pkt {
                 sys::RETURNPKT => {
                     let result = self.link.get_expr().map_err(|e| anyhow!("{e:?}"))?;
-                    let raw_expr = Some(format!("{result:?}"));
-
-                    let output_text = expr_to_input_form_string(&mut self.link, deadline, &result)
-                        .unwrap_or_else(|err| {
-                            warn!(error = %err, "failed to stringify result");
-                            format!("{result:?}")
-                        });
+                    let (output_text, raw_expr) = match result.kind() {
+                        ExprKind::Normal(n)
+                            if n.has_head(&Symbol::new("System`List"))
+                                && n.elements().len() == 2 =>
+                        {
+                            let elems = n.elements();
+                            let out = match elems[0].kind() {
+                                ExprKind::String(s) => s.as_str().to_string(),
+                                _ => format!("{:?}", &elems[0]),
+                            };
+                            let raw = match elems[1].kind() {
+                                ExprKind::String(s) => Some(s.as_str().to_string()),
+                                _ => Some(format!("{:?}", &elems[1])),
+                            };
+                            (out, raw)
+                        }
+                        ExprKind::String(s) => (s.as_str().to_string(), None),
+                        _ => (format!("{result:?}"), Some(format!("{result:?}"))),
+                    };
 
                     self.link.new_packet().map_err(|e| anyhow!("{e:?}"))?;
 
@@ -191,41 +220,6 @@ fn discover_kernel_executable(config: &KernelConfig) -> anyhow::Result<PathBuf> 
         .context("wolfram-app-discovery could not find a Wolfram installation")?;
     app.kernel_executable_path()
         .context("failed to get kernel executable path from wolfram-app-discovery")
-}
-
-fn expr_to_input_form_string(
-    link: &mut Link,
-    deadline: Instant,
-    result: &Expr,
-) -> anyhow::Result<String> {
-    let to_string_expr = Expr::normal(
-        Symbol::new("System`ToString"),
-        vec![
-            result.clone(),
-            Expr::symbol(Symbol::new("System`InputForm")),
-        ],
-    );
-
-    link.put_eval_packet(&to_string_expr)
-        .map_err(|e| anyhow!("{e:?}"))?;
-    link.flush().map_err(|e| anyhow!("{e:?}"))?;
-
-    loop {
-        wait_until(link, deadline).context("wait for kernel activity (ToString)")?;
-        let pkt = link.raw_next_packet().map_err(|e| anyhow!("{e:?}"))?;
-        if pkt == sys::RETURNPKT {
-            let s_expr = link.get_expr().map_err(|e| anyhow!("{e:?}"))?;
-            link.new_packet().map_err(|e| anyhow!("{e:?}"))?;
-
-            // Best-effort: if it's a string, show the string; else debug.
-            if let wolfram_expr::ExprKind::String(s) = s_expr.kind() {
-                return Ok(s.as_str().to_string());
-            }
-            return Ok(format!("{s_expr:?}"));
-        } else {
-            link.new_packet().map_err(|e| anyhow!("{e:?}"))?;
-        }
-    }
 }
 
 fn launch_kernel_with_timeout(
