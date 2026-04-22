@@ -9,6 +9,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Wolfram Engine
+        uses: WolframResearch/setup-wolfram-engine@v1
+        with:
+          wolfram-id: ${{ secrets.WOLFRAM_ID }}
+          wolfram-pass: ${{ secrets.WOLFRAM_PASS }}
+
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt, clippy
@@ -22,4 +29,3 @@ jobs:
         run: cargo test
       - name: build
         run: cargo build
-

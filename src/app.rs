@@ -43,8 +43,8 @@ impl UiPalette {
                 panel_alt: egui::Color32::from_rgb(26, 26, 29),
                 card: egui::Color32::from_rgb(36, 36, 40),
                 card_hover: egui::Color32::from_rgb(44, 44, 49),
-                stroke: egui::Stroke::new(1.0, egui::Color32::from_rgb(70, 70, 78)),
-                subtle_stroke: egui::Stroke::new(1.0, egui::Color32::from_rgb(52, 52, 58)),
+                stroke: egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(70, 70, 78)),
+                subtle_stroke: egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(52, 52, 58)),
                 text_dim: egui::Color32::from_rgb(170, 170, 180),
             }
         } else {
@@ -54,8 +54,8 @@ impl UiPalette {
                 panel_alt: egui::Color32::from_rgb(242, 242, 245),
                 card: egui::Color32::from_rgb(255, 255, 255),
                 card_hover: egui::Color32::from_rgb(252, 252, 252),
-                stroke: egui::Stroke::new(1.0, egui::Color32::from_rgb(215, 215, 222)),
-                subtle_stroke: egui::Stroke::new(1.0, egui::Color32::from_rgb(228, 228, 234)),
+                stroke: egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(215, 215, 222)),
+                subtle_stroke: egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(228, 228, 234)),
                 text_dim: egui::Color32::from_rgb(110, 110, 120),
             }
         }
@@ -683,7 +683,7 @@ impl Tab {
 
                     match self.kernel.evaluate_string_list(eval_id, &wl) {
                         Ok(items) => {
-                            let context = items.get(0).cloned().unwrap_or_default();
+                            let context = items.first().cloned().unwrap_or_default();
                             let usage = items.get(1).cloned().unwrap_or_default();
                             self.doc_selected = Some(sym.clone());
                             self.doc_content = format!(
@@ -919,10 +919,10 @@ impl eframe::App for WovenApp {
         if ui.input(|i| i.key_pressed(egui::Key::P) && i.modifiers.ctrl) {
             self.active_tab_mut().show_palette = true;
         }
-        if ui.input(|i| i.key_pressed(egui::Key::S) && i.modifiers.ctrl) {
-            if let Err(err) = self.active_tab_mut().save_notebook() {
-                error!(error = %err, "save failed");
-            }
+        if ui.input(|i| i.key_pressed(egui::Key::S) && i.modifiers.ctrl)
+            && let Err(err) = self.active_tab_mut().save_notebook()
+        {
+            error!(error = %err, "save failed");
         }
 
         // Autosave tick
@@ -1128,11 +1128,11 @@ impl eframe::App for WovenApp {
                 }
                 "save_all" => {
                     for t in &mut self.tabs {
-                        if t.dirty {
-                            if let Err(err) = t.save_notebook() {
-                                last_error = Some(format!("save-all failed: {err:#}"));
-                                break;
-                            }
+                        if t.dirty
+                            && let Err(err) = t.save_notebook()
+                        {
+                            last_error = Some(format!("save-all failed: {err:#}"));
+                            break;
                         }
                     }
                 }
@@ -1301,10 +1301,10 @@ impl eframe::App for WovenApp {
                                 ui.painter().circle_filled(rect.center(), 6.0, dot);
                                 ui.label("Kernel status");
                             });
-                            if ui.button("Restart kernel").clicked() {
-                                if let Err(err) = self.tabs[active].kernel.restart(&kernel_cfg) {
-                                    last_error = Some(format!("kernel restart failed: {err:#}"));
-                                }
+                            if ui.button("Restart kernel").clicked()
+                                && let Err(err) = self.tabs[active].kernel.restart(&kernel_cfg)
+                            {
+                                last_error = Some(format!("kernel restart failed: {err:#}"));
                             }
                         });
                 });
@@ -1498,7 +1498,7 @@ impl eframe::App for WovenApp {
                                         let frame = egui::Frame::NONE
                                             .fill(palette.card)
                                             .stroke(if is_selected {
-                                                egui::Stroke::new(1.5, accent)
+                                                egui::Stroke::new(1.5_f32, accent)
                                             } else {
                                                 palette.subtle_stroke
                                             })
@@ -1593,62 +1593,59 @@ impl eframe::App for WovenApp {
                                                         tab.dirty = true;
                                                     }
 
-                                                    if let Some(out) = group.output.as_ref() {
-                                                        if !group.collapsed {
-                                                            ui.add_space(10.0);
-                                                            ui.separator();
-                                                            ui.add_space(10.0);
+                                                    if let Some(out) = group.output.as_ref()
+                                                        && !group.collapsed
+                                                    {
+                                                        ui.add_space(10.0);
+                                                        ui.separator();
+                                                        ui.add_space(10.0);
 
-                                                            let output_text = truncate_str(
-                                                                &out.output_text,
-                                                                self.config.plot.max_output_chars,
-                                                            );
-                                                            if !output_text.trim().is_empty() {
-                                                                ui.label(
-                                                                    egui::RichText::new(
-                                                                        output_text,
-                                                                    )
+                                                        let output_text = truncate_str(
+                                                            &out.output_text,
+                                                            self.config.plot.max_output_chars,
+                                                        );
+                                                        if !output_text.trim().is_empty() {
+                                                            ui.label(
+                                                                egui::RichText::new(output_text)
                                                                     .size(20.0)
                                                                     .color(output_green),
+                                                            );
+                                                        }
+
+                                                        let messages: Vec<&String> = out
+                                                            .messages
+                                                            .iter()
+                                                            .take(self.config.plot.max_messages)
+                                                            .collect();
+                                                        if !messages.is_empty() {
+                                                            ui.add_space(8.0);
+                                                            for m in messages {
+                                                                ui.colored_label(
+                                                                    palette.text_dim,
+                                                                    m,
                                                                 );
                                                             }
+                                                        }
 
-                                                            let messages: Vec<&String> = out
-                                                                .messages
-                                                                .iter()
-                                                                .take(self.config.plot.max_messages)
-                                                                .collect();
-                                                            if !messages.is_empty() {
-                                                                ui.add_space(8.0);
-                                                                for m in messages {
-                                                                    ui.colored_label(
-                                                                        palette.text_dim,
-                                                                        m,
-                                                                    );
-                                                                }
-                                                            }
-
-                                                            if self.config.plot.placeholder_enabled
-                                                                && is_plot_like(out)
-                                                            {
-                                                                ui.add_space(10.0);
-                                                                Plot::new(format!(
-                                                                    "plot_placeholder_{}",
-                                                                    group.id
-                                                                ))
-                                                                .show(ui, |plot_ui| {
-                                                                    let points: PlotPoints = (0
-                                                                        ..100)
-                                                                        .map(|i| {
-                                                                            let x = i as f64 / 10.0;
-                                                                            [x, (x).sin()]
-                                                                        })
-                                                                        .collect();
-                                                                    plot_ui.line(Line::new(
-                                                                        "sin(x)", points,
-                                                                    ));
-                                                                });
-                                                            }
+                                                        if self.config.plot.placeholder_enabled
+                                                            && is_plot_like(out)
+                                                        {
+                                                            ui.add_space(10.0);
+                                                            Plot::new(format!(
+                                                                "plot_placeholder_{}",
+                                                                group.id
+                                                            ))
+                                                            .show(ui, |plot_ui| {
+                                                                let points: PlotPoints = (0..100)
+                                                                    .map(|i| {
+                                                                        let x = i as f64 / 10.0;
+                                                                        [x, (x).sin()]
+                                                                    })
+                                                                    .collect();
+                                                                plot_ui.line(Line::new(
+                                                                    "sin(x)", points,
+                                                                ));
+                                                            });
                                                         }
                                                     }
                                                 });
@@ -1728,10 +1725,10 @@ impl eframe::App for WovenApp {
             self.confirm_delete = true;
         }
 
-        if let Some(p) = open_notebook.take() {
-            if let Err(err) = self.open_notebook_in_new_tab(p) {
-                error!(error = %err, "open notebook failed");
-            }
+        if let Some(p) = open_notebook.take()
+            && let Err(err) = self.open_notebook_in_new_tab(p)
+        {
+            error!(error = %err, "open notebook failed");
         }
 
         // Confirmations
