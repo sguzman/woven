@@ -21,7 +21,11 @@ eval_timeout_ms = 60000
 [ui]
 font_scale = 1.0
 notebook_path = "notebooks/default.json"
+autosave_enabled = true
+autosave_interval_ms = 10000
 
 [plot]
 # Reserved for upcoming plot interception / rendering tuning.
 placeholder_enabled = true
+max_output_chars = 200000
+max_messages = 1000

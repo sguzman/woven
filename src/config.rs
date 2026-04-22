@@ -131,6 +131,10 @@ pub struct UiConfig {
     pub font_scale: f32,
     #[serde(default = "default_notebook_path")]
     pub notebook_path: String,
+    #[serde(default = "default_autosave_enabled")]
+    pub autosave_enabled: bool,
+    #[serde(default = "default_autosave_interval_ms")]
+    pub autosave_interval_ms: u64,
 }
 
 fn default_font_scale() -> f32 {
@@ -141,11 +145,21 @@ fn default_notebook_path() -> String {
     "notebooks/default.json".to_string()
 }
 
+fn default_autosave_enabled() -> bool {
+    true
+}
+
+fn default_autosave_interval_ms() -> u64 {
+    10_000
+}
+
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
             font_scale: default_font_scale(),
             notebook_path: default_notebook_path(),
+            autosave_enabled: default_autosave_enabled(),
+            autosave_interval_ms: default_autosave_interval_ms(),
         }
     }
 }
@@ -154,16 +168,30 @@ impl Default for UiConfig {
 pub struct PlotConfig {
     #[serde(default = "default_plot_placeholder_enabled")]
     pub placeholder_enabled: bool,
+    #[serde(default = "default_max_output_chars")]
+    pub max_output_chars: usize,
+    #[serde(default = "default_max_messages")]
+    pub max_messages: usize,
 }
 
 fn default_plot_placeholder_enabled() -> bool {
     true
 }
 
+fn default_max_output_chars() -> usize {
+    200_000
+}
+
+fn default_max_messages() -> usize {
+    1_000
+}
+
 impl Default for PlotConfig {
     fn default() -> Self {
         Self {
             placeholder_enabled: default_plot_placeholder_enabled(),
+            max_output_chars: default_max_output_chars(),
+            max_messages: default_max_messages(),
         }
     }
 }
@@ -226,6 +254,8 @@ mod tests {
             ui: UiConfig {
                 font_scale: 0.0,
                 notebook_path: default_notebook_path(),
+                autosave_enabled: default_autosave_enabled(),
+                autosave_interval_ms: default_autosave_interval_ms(),
             },
             plot: PlotConfig::default(),
         };

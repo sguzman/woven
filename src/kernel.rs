@@ -61,6 +61,15 @@ impl KernelSession {
         Ok(())
     }
 
+    #[instrument(skip_all)]
+    pub fn abort(&mut self) -> anyhow::Result<()> {
+        use wstp::UrgentMessage;
+        self.link
+            .put_message(UrgentMessage::ABORT)
+            .map_err(|e| anyhow!("{e:?}"))?;
+        Ok(())
+    }
+
     #[instrument(skip_all, fields(eval_id))]
     pub fn evaluate(&mut self, eval_id: u64, wl_input: &str) -> anyhow::Result<EvalResult> {
         if wl_input.trim().is_empty() {
