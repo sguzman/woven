@@ -21,8 +21,11 @@ eval_timeout_ms = 60000
 [ui]
 font_scale = 1.0
 notebook_path = "notebooks/default.json"
+theme = "dark"
 autosave_enabled = true
 autosave_interval_ms = 10000
+nav_width = 280.0
+inspector_width = 360.0
 
 [plot]
 # Reserved for upcoming plot interception / rendering tuning.

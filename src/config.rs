@@ -131,10 +131,16 @@ pub struct UiConfig {
     pub font_scale: f32,
     #[serde(default = "default_notebook_path")]
     pub notebook_path: String,
+    #[serde(default)]
+    pub theme: Theme,
     #[serde(default = "default_autosave_enabled")]
     pub autosave_enabled: bool,
     #[serde(default = "default_autosave_interval_ms")]
     pub autosave_interval_ms: u64,
+    #[serde(default = "default_nav_width")]
+    pub nav_width: f32,
+    #[serde(default = "default_inspector_width")]
+    pub inspector_width: f32,
 }
 
 fn default_font_scale() -> f32 {
@@ -153,13 +159,46 @@ fn default_autosave_interval_ms() -> u64 {
     10_000
 }
 
+fn default_nav_width() -> f32 {
+    280.0
+}
+
+fn default_inspector_width() -> f32 {
+    360.0
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    Dark,
+    Light,
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Theme::Dark
+    }
+}
+
+impl Theme {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Theme::Dark => "dark",
+            Theme::Light => "light",
+        }
+    }
+}
+
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
             font_scale: default_font_scale(),
             notebook_path: default_notebook_path(),
+            theme: Theme::default(),
             autosave_enabled: default_autosave_enabled(),
             autosave_interval_ms: default_autosave_interval_ms(),
+            nav_width: default_nav_width(),
+            inspector_width: default_inspector_width(),
         }
     }
 }
@@ -240,9 +279,46 @@ pub fn load() -> anyhow::Result<AppConfig> {
     Ok(cfg)
 }
 
+pub fn persist_local_theme(theme: Theme) -> anyhow::Result<()> {
+    let root = repo_root()?;
+    let local_path = root.join("config/woven.local.toml");
+
+    let mut doc: toml::Value = if local_path.is_file() {
+        let s = std::fs::read_to_string(&local_path)
+            .with_context(|| format!("read {}", local_path.display()))?;
+        toml::from_str(&s).with_context(|| format!("parse {}", local_path.display()))?
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    };
+
+    let table = doc
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("config/woven.local.toml must be a TOML table at the root"))?;
+
+    let ui = table
+        .entry("ui")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    let ui_table = ui
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("[ui] must be a table"))?;
+    ui_table.insert(
+        "theme".to_string(),
+        toml::Value::String(theme.as_str().to_string()),
+    );
+
+    if let Some(parent) = local_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+
+    let s = toml::to_string_pretty(&doc).context("serialize woven.local.toml")?;
+    std::fs::write(&local_path, s).with_context(|| format!("write {}", local_path.display()))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
     use std::fs;
 
     #[test]
@@ -256,6 +332,9 @@ mod tests {
                 notebook_path: default_notebook_path(),
                 autosave_enabled: default_autosave_enabled(),
                 autosave_interval_ms: default_autosave_interval_ms(),
+                theme: Theme::default(),
+                nav_width: default_nav_width(),
+                inspector_width: default_inspector_width(),
             },
             plot: PlotConfig::default(),
         };
@@ -296,5 +375,41 @@ font_scale = 2.0
             .unwrap();
 
         assert_eq!(cfg.ui.font_scale, 2.0);
+    }
+
+    #[test]
+    fn persist_local_theme_writes_file_and_preserves_existing_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("config")).unwrap();
+
+        // Seed with an existing override.
+        fs::write(
+            root.join("config/woven.local.toml"),
+            r#"
+[ui]
+font_scale = 1.5
+"#,
+        )
+        .unwrap();
+
+        let old = env::current_dir().unwrap();
+        env::set_current_dir(root).unwrap();
+
+        let res = persist_local_theme(Theme::Light);
+
+        env::set_current_dir(old).unwrap();
+
+        res.unwrap();
+
+        let s = fs::read_to_string(root.join("config/woven.local.toml")).unwrap();
+        let v: toml::Value = toml::from_str(&s).unwrap();
+
+        let ui = v.get("ui").and_then(|v| v.as_table()).unwrap();
+        assert_eq!(ui.get("theme").and_then(|v| v.as_str()).unwrap(), "light");
+        assert_eq!(
+            ui.get("font_scale").and_then(|v| v.as_float()).unwrap(),
+            1.5
+        );
     }
 }
