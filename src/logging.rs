@@ -9,6 +9,7 @@ use tracing_subscriber::{
     EnvFilter,
     Layer as _,
 };
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::config::{AppConfig, Mode};
 
@@ -28,12 +29,13 @@ pub fn init(config: &AppConfig) -> anyhow::Result<LoggingGuards> {
         .with_line_number(true)
         .with_file(true)
         .with_thread_names(true)
+        .with_timer(fmt::time::UtcTime::rfc_3339())
         .with_filter(env_filter.clone());
 
     let mut file_guard = None;
 
     if should_enable_file_logging(config) {
-        let (writer, guard) = build_file_writer(config)?;
+        let (writer, guard, file_path) = build_file_writer(config)?;
         file_guard = Some(guard);
 
         let file_layer = fmt::layer()
@@ -41,8 +43,11 @@ pub fn init(config: &AppConfig) -> anyhow::Result<LoggingGuards> {
             .with_target(true)
             .with_current_span(true)
             .with_span_list(true)
+            .with_timer(fmt::time::UtcTime::rfc_3339())
             .with_writer(writer)
             .with_filter(env_filter);
+
+        tracing::info!(path = %file_path.display(), "file logging enabled");
 
         tracing_subscriber::registry()
             .with(stdout_layer)
@@ -64,41 +69,52 @@ fn should_enable_file_logging(config: &AppConfig) -> bool {
     }
 }
 
-fn build_file_writer(config: &AppConfig) -> anyhow::Result<(NonBlocking, WorkerGuard)> {
+fn build_file_writer(config: &AppConfig) -> anyhow::Result<(NonBlocking, WorkerGuard, PathBuf)> {
     let path = PathBuf::from(&config.logging.file.path);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).context("create logs dir")?;
     }
 
     let rolling = config.logging.file.rolling.as_str();
-    let (writer, guard) = match rolling {
-        "daily" => {
-            let dir = path
-                .parent()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("."));
-            let file_name = path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("woven.log");
-            let appender = tracing_appender::rolling::daily(dir, file_name);
-            tracing_appender::non_blocking(appender)
-        },
-        "never" => {
-            let file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .with_context(|| format!("open log file {}", path.display()))?;
-            tracing_appender::non_blocking(file)
-        },
-        other => {
-            anyhow::bail!(
-                "unsupported logging.file.rolling value: {other} (expected 'daily' or 'never')"
-            );
-        },
-    };
-    Ok((writer, guard))
+    if rolling != "run" {
+        anyhow::bail!("unsupported logging.file.rolling value: {rolling} (expected 'run')");
+    }
+
+    let dir = path
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("logs"));
+
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("woven")
+        .to_string();
+
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("log")
+        .to_string();
+
+    let ts = OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .context("format timestamp")?
+        .replace(':', "")
+        .replace('.', "")
+        .replace('Z', "Z");
+    let pid = std::process::id();
+
+    let file_path = dir.join(format!("{stem}-{ts}-{pid}.{ext}"));
+
+    let file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .append(true)
+        .open(&file_path)
+        .with_context(|| format!("create log file {}", file_path.display()))?;
+
+    let (writer, guard) = tracing_appender::non_blocking(file);
+    Ok((writer, guard, file_path))
 }
 
 #[cfg(test)]

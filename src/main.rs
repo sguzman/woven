@@ -8,12 +8,17 @@ fn main() -> anyhow::Result<()> {
 
     info!(mode = %config.mode.as_str(), "woven starting");
 
+    // WSTP is obligatory: fail fast at startup if the kernel cannot be discovered
+    // and connected.
+    let kernel = woven::kernel::KernelSession::new(&config.kernel)
+        .context("connect to Wolfram Kernel via WSTP")?;
+
     let native_options = eframe::NativeOptions::default();
 
     eframe::run_native(
         "Woven",
         native_options,
-        Box::new(|cc| Ok(Box::new(woven::app::WovenApp::new(cc, config.clone())))),
+        Box::new(move |cc| Ok(Box::new(woven::app::WovenApp::new(cc, config.clone(), kernel)))),
     )
     .context("run eframe app")?;
 

@@ -30,13 +30,17 @@ pub struct WovenApp {
     selected: usize,
     next_cell_id: u64,
     next_eval_id: u64,
-    kernel: Option<KernelSession>,
+    kernel: KernelSession,
     last_error: Option<String>,
 }
 
 impl WovenApp {
     #[instrument(skip_all)]
-    pub fn new(cc: &eframe::CreationContext<'_>, config: AppConfig) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        config: AppConfig,
+        kernel: KernelSession,
+    ) -> Self {
         let config = Arc::new(config);
 
         let mut style = (*cc.egui_ctx.global_style()).clone();
@@ -51,7 +55,7 @@ impl WovenApp {
             selected: 0,
             next_cell_id: 1,
             next_eval_id: 1,
-            kernel: None,
+            kernel,
             last_error: None,
         };
 
@@ -74,14 +78,6 @@ impl WovenApp {
 
     fn selected_cell_mut(&mut self) -> Option<&mut Cell> {
         self.cells.get_mut(self.selected)
-    }
-
-    fn get_or_start_kernel(&mut self) -> anyhow::Result<&mut KernelSession> {
-        if self.kernel.is_none() {
-            let kernel = KernelSession::new(&self.config.kernel)?;
-            self.kernel = Some(kernel);
-        }
-        Ok(self.kernel.as_mut().expect("just set"))
     }
 
     #[instrument(skip_all, fields(cell_id, eval_id))]
@@ -111,8 +107,7 @@ impl WovenApp {
 
         info!("evaluating cell");
         let result = (|| -> anyhow::Result<EvalResult> {
-            let kernel = self.get_or_start_kernel()?;
-            kernel.evaluate(eval_id, &input)
+            self.kernel.evaluate(eval_id, &input)
         })();
 
         match result {

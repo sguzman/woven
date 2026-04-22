@@ -6,10 +6,11 @@ level = "info"
 [logging.file]
 # In `dev` mode, file logging is enabled by default.
 enabled = true
-# Log file path. Relative paths are resolved relative to the repo root.
+# Log file base path. Each run writes to a unique timestamped file derived from this.
+# Relative paths are resolved relative to the repo root.
 path = "logs/woven.log"
-# Rolling policy: "daily" or "never" (single file).
-rolling = "daily"
+# Rolling policy (currently only "run" is supported).
+rolling = "run"
 
 [kernel]
 # Optional path to a WolframKernel executable. If omitted, Woven will auto-discover.
