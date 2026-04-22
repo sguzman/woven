@@ -6,10 +6,9 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
 use tracing::{debug, info, instrument};
 use wolfram_app_discovery::WolframApp;
-use wolfram_expr::{Expr, Symbol};
+use wolfram_expr::{Expr, ExprKind, Symbol};
 use wstp::{Link, Protocol, sys};
 
 use crate::config::KernelConfig;
@@ -87,31 +86,70 @@ impl KernelSession {
             });
         }
 
-        let deadline = Instant::now()
-            .checked_add(Duration::from_millis(self.config.eval_timeout_ms))
-            .expect("deadline overflow");
-
         // IMPORTANT:
         // The kernel can emit relative symbols (without contexts) inside packets like MESSAGEPKT.
         // The `wstp` crate rejects those when parsing into `Expr`, which can poison the link.
         //
         // Strategy:
-        // - Ask the kernel to return a single JSON *string* for every evaluation.
+        // - Ask the kernel to return a simple `{out, raw, msgs}` list for every evaluation.
+        //   (We intentionally do NOT use `ExportString[..., "JSON"]` because JSON export can be
+        //   unavailable in some installations, yielding `$Failed`.)
         // - Use Quiet + $MessageList to avoid MESSAGEPKT and capture messages ourselves.
-        // - Prefer reading RETURNPKT as a raw string (no symbol parsing).
+        // - Parse RETURNPKT expression with a permissive symbol resolver.
         let wl = format!(
             "Block[{{$MessageList={{}}}}, \
-             Module[{{res}}, \
+             Module[{{res, out, raw, msgs}}, \
                res = Quiet[Check[ToExpression[\"{input}\"], $Failed], All]; \
-               ExportString[<|\
-                 \"output\" -> ToString[res, InputForm], \
-                 \"raw\" -> ToString[res, FullForm], \
-                 \"messages\" -> (ToString[#, InputForm] & /@ $MessageList)\
-               |>, \"JSON\"]\
+               out = ToString[res, InputForm]; \
+               raw = ToString[res, InputForm]; \
+               msgs = (ToString[#, InputForm] & /@ $MessageList); \
+               {{out, raw, msgs}}\
              ]]",
             input = wl_escape_string(wl_input),
         );
-        let expr = Expr::normal(Symbol::new("System`ToExpression"), vec![Expr::string(wl)]);
+        let (expr, mut messages) = self.eval_return_expr(eval_id, &wl)?;
+
+        let (output_text, raw, msgs_from_kernel) =
+            parse_eval_tuple3_strings(&expr).context("parse eval result tuple")?;
+        messages.extend(msgs_from_kernel);
+
+        info!(
+            eval_id,
+            output_len = output_text.len(),
+            message_count = messages.len(),
+            "evaluation complete"
+        );
+
+        Ok(EvalResult {
+            output_text,
+            messages,
+            raw_expr: Some(raw),
+        })
+    }
+
+    #[instrument(skip_all, fields(eval_id))]
+    pub fn evaluate_string_list(
+        &mut self,
+        eval_id: u64,
+        wl_input: &str,
+    ) -> anyhow::Result<Vec<String>> {
+        let (expr, _messages) = self.eval_return_expr(eval_id, wl_input)?;
+        parse_string_list(&expr).context("parse string list")
+    }
+
+    fn eval_return_expr(
+        &mut self,
+        eval_id: u64,
+        wl_input: &str,
+    ) -> anyhow::Result<(Expr, Vec<String>)> {
+        let deadline = Instant::now()
+            .checked_add(Duration::from_millis(self.config.eval_timeout_ms))
+            .expect("deadline overflow");
+
+        let expr = Expr::normal(
+            Symbol::new("System`ToExpression"),
+            vec![Expr::string(wl_input.to_string())],
+        );
 
         self.link
             .put_eval_packet(&expr)
@@ -132,53 +170,13 @@ impl KernelSession {
 
             match pkt {
                 sys::RETURNPKT => {
-                    // The wrapper always returns a single JSON string. If we can't read a string
-                    // token here, something has gone badly wrong; fail fast (but still try to
-                    // advance packets so the session doesn't get stuck).
-                    let json = match self.link.get_string() {
-                        Ok(s) => s,
-                        Err(e) => {
-                            let _ = self.link.new_packet();
-                            return Err(anyhow!("{e:?}"));
-                        }
-                    };
-
+                    let ret = self
+                        .link
+                        .get_expr_with_resolver(&mut resolve_symbol_lossy)
+                        .map_err(|e| anyhow!("{e:?}"))?;
                     self.link.new_packet().map_err(|e| anyhow!("{e:?}"))?;
-
-                    let decoded: JsonValue = serde_json::from_str(&json).with_context(|| {
-                        format!(
-                            "kernel returned non-JSON string: {}",
-                            truncate_for_log(&json)
-                        )
-                    })?;
-
-                    let output_text = decoded
-                        .get("output")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let raw_expr = decoded
-                        .get("raw")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    if let Some(arr) = decoded.get("messages").and_then(|v| v.as_array()) {
-                        for m in arr.iter().filter_map(|v| v.as_str()) {
-                            messages.push(m.to_string());
-                        }
-                    }
-
-                    info!(
-                        eval_id,
-                        output_len = output_text.len(),
-                        message_count = messages.len(),
-                        "evaluation complete"
-                    );
-
-                    return Ok(EvalResult {
-                        output_text,
-                        messages,
-                        raw_expr,
-                    });
+                    debug!(eval_id, kind = ?ret.kind(), "received RETURNPKT");
+                    return Ok((ret, messages));
                 }
                 sys::TEXTPKT | sys::RETURNTEXTPKT => {
                     if let Ok(s) = self.link.get_string() {
@@ -188,7 +186,6 @@ impl KernelSession {
                 }
                 sys::MESSAGEPKT => {
                     // Avoid parsing MESSAGEPKT (it may contain relative symbols).
-                    // We rely on Quiet + $MessageList in the RETURNPKT payload instead.
                     self.link.new_packet().map_err(|e| anyhow!("{e:?}"))?;
                 }
                 sys::INPUTNAMEPKT
@@ -202,7 +199,6 @@ impl KernelSession {
                 | sys::FIRSTUSERPKT
                 | sys::LASTUSERPKT
                 | sys::ILLEGALPKT => {
-                    // Consume/skip.
                     self.link.new_packet().map_err(|e| anyhow!("{e:?}"))?;
                 }
                 other => {
@@ -211,9 +207,6 @@ impl KernelSession {
                 }
             }
         }
-
-        // Unreachable: the kernel is expected to eventually send RETURNPKT for an evaluation.
-        // If it doesn't, `wait_until` will time out and return an error.
     }
 }
 
@@ -225,12 +218,64 @@ fn wl_escape_string(s: &str) -> String {
         .replace('\r', "")
 }
 
-fn truncate_for_log(s: &str) -> String {
-    const MAX: usize = 400;
-    if s.len() <= MAX {
-        s.to_string()
+fn resolve_symbol_lossy(sym: &str) -> Option<Symbol> {
+    if sym.contains('`') {
+        return Symbol::try_new(sym);
+    }
+    if sym.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+        Symbol::try_new(&format!("System`{sym}"))
     } else {
-        format!("{}…", &s[..MAX])
+        Symbol::try_new(&format!("Global`{sym}"))
+    }
+}
+
+fn parse_eval_tuple3_strings(expr: &Expr) -> anyhow::Result<(String, String, Vec<String>)> {
+    let items = parse_list_items(expr).context("expected List[...]")?;
+    if items.len() != 3 {
+        return Err(anyhow!("expected 3-item list, got {}", items.len()));
+    }
+    let out = as_string(&items[0]).context("out string")?;
+    let raw = as_string(&items[1]).context("raw string")?;
+    let msgs_expr = &items[2];
+    let msgs_items = parse_list_items(msgs_expr).unwrap_or_default();
+    let mut msgs = Vec::new();
+    for m in msgs_items {
+        if let Ok(s) = as_string(&m) {
+            msgs.push(s);
+        }
+    }
+    Ok((out, raw, msgs))
+}
+
+fn parse_string_list(expr: &Expr) -> anyhow::Result<Vec<String>> {
+    let items = parse_list_items(expr).context("expected List[...]")?;
+    items
+        .iter()
+        .map(|e| as_string(e).context("list element"))
+        .collect()
+}
+
+fn parse_list_items(expr: &Expr) -> anyhow::Result<Vec<Expr>> {
+    match expr.kind() {
+        ExprKind::Normal(n) => {
+            let head = n.head();
+            let is_list = matches!(
+                head.kind(),
+                ExprKind::Symbol(s) if s.as_str() == "System`List"
+            );
+            if !is_list {
+                return Err(anyhow!("expected List head, got {head:?}"));
+            }
+            Ok(n.elements().to_vec())
+        }
+        _ => Err(anyhow!("expected list expr, got {:?}", expr.kind())),
+    }
+}
+
+fn as_string(expr: &Expr) -> anyhow::Result<String> {
+    match expr.kind() {
+        ExprKind::String(s) => Ok(s.as_str().to_string()),
+        _ => Err(anyhow!("expected string expr, got {:?}", expr.kind())),
     }
 }
 

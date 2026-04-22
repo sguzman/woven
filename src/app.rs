@@ -656,63 +656,45 @@ impl Tab {
                 DocJob::Search(q) => {
                     self.doc_error = None;
                     let wl = format!(
-                        "ExportString[Take[Sort[Names[\"*\"<>\"{q}\"<>\"*\"]], UpTo[50]], \"JSON\"]",
+                        "Take[Sort[Names[\"*\"<>\"{q}\"<>\"*\"]], UpTo[50]]",
                         q = wl_escape_string(&q)
                     );
                     let eval_id = self.id * 1_000_000 + 900_000 + self.doc_eval_counter;
                     self.doc_eval_counter = self.doc_eval_counter.wrapping_add(1);
 
-                    match self.eval_with_recovery(eval_id, &wl) {
-                        Ok(out) => {
-                            let json = unquote_json_string(&out.output_text);
-                            match serde_json::from_str::<Vec<String>>(&json) {
-                                Ok(mut results) => {
-                                    results.truncate(50);
-                                    self.doc_results = results;
-                                    self.doc_selected = None;
-                                    self.doc_content.clear();
-                                }
-                                Err(err) => {
-                                    self.doc_error = Some(format!(
-                                        "failed to parse search results: {err} (raw: {json})"
-                                    ));
-                                }
-                            }
+                    match self.kernel.evaluate_string_list(eval_id, &wl) {
+                        Ok(mut results) => {
+                            results.truncate(50);
+                            self.doc_results = results;
+                            self.doc_selected = None;
+                            self.doc_content.clear();
                         }
-                        Err(err) => {
-                            self.doc_error = Some(format!("doc search failed: {err:#}"));
-                        }
-                    }
+                        Err(err) => self.doc_error = Some(format!("doc search failed: {err:#}")),
+                    };
                 }
                 DocJob::Fetch(sym) => {
                     self.doc_error = None;
                     let wl = format!(
-                        "ExportString[With[{{s=\"{s}\"}},<|\"Name\"->s,\"Context\"->Quiet@Check[Context[Symbol[s]],\"\"],\"Usage\"->Quiet@Check[Information[Symbol[s],\"Usage\"],\"\"]|>],\"JSON\"]",
+                        "With[{{s=\"{s}\"}},{{Quiet@Check[Context[Symbol[s]],\"\"],Quiet@Check[Information[Symbol[s],\"Usage\"],\"\"]}}]",
                         s = wl_escape_string(&sym)
                     );
                     let eval_id = self.id * 1_000_000 + 910_000 + self.doc_eval_counter;
                     self.doc_eval_counter = self.doc_eval_counter.wrapping_add(1);
 
-                    match self.eval_with_recovery(eval_id, &wl) {
-                        Ok(out) => {
-                            let json = unquote_json_string(&out.output_text);
-                            match serde_json::from_str::<serde_json::Value>(&json) {
-                                Ok(v) => {
-                                    self.doc_selected = Some(sym);
-                                    self.doc_content =
-                                        serde_json::to_string_pretty(&v).unwrap_or_else(|_| json);
-                                }
-                                Err(err) => {
-                                    self.doc_error = Some(format!(
-                                        "failed to parse documentation page: {err} (raw: {json})"
-                                    ));
-                                }
-                            }
+                    match self.kernel.evaluate_string_list(eval_id, &wl) {
+                        Ok(items) => {
+                            let context = items.get(0).cloned().unwrap_or_default();
+                            let usage = items.get(1).cloned().unwrap_or_default();
+                            self.doc_selected = Some(sym.clone());
+                            self.doc_content = format!(
+                                "Name: {}\nContext: {}\n\nUsage:\n{}",
+                                sym,
+                                context,
+                                usage.trim()
+                            );
                         }
-                        Err(err) => {
-                            self.doc_error = Some(format!("doc fetch failed: {err:#}"));
-                        }
-                    }
+                        Err(err) => self.doc_error = Some(format!("doc fetch failed: {err:#}")),
+                    };
                 }
             }
         }
@@ -1477,14 +1459,14 @@ impl eframe::App for WovenApp {
 
                 let visible = tab.visible_indices();
                 let full_w = ui.available_width();
-                let content_w = full_w.min(980.0);
+                let content_w = full_w;
                 let side = ((full_w - content_w) / 2.0).max(0.0);
 
                 ui.horizontal(|ui| {
                     ui.add_space(side);
 
                     ui.allocate_ui_with_layout(
-                        egui::vec2(content_w, 0.0),
+                        egui::vec2(content_w, ui.available_height()),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
                             ui.set_min_width(content_w);
@@ -1948,14 +1930,4 @@ fn wl_escape_string(s: &str) -> String {
         .replace('\"', "\\\"")
         .replace('\n', "\\n")
         .replace('\r', "")
-}
-
-fn unquote_json_string(s: &str) -> String {
-    let t = s.trim();
-    if t.starts_with('"') && t.ends_with('"') {
-        if let Ok(decoded) = serde_json::from_str::<String>(t) {
-            return decoded;
-        }
-    }
-    t.to_string()
 }
