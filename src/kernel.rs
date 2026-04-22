@@ -1,14 +1,19 @@
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    process,
+    time::{Duration, Instant},
+};
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
 use wolfram_app_discovery::WolframApp;
 use wolfram_expr::{Expr, Symbol};
-use wstp::{kernel::WolframKernelProcess, sys, Link};
+use wstp::{Link, Protocol, sys};
 
 use crate::config::KernelConfig;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvalResult {
     pub output_text: String,
     pub messages: Vec<String>,
@@ -17,7 +22,9 @@ pub struct EvalResult {
 
 #[derive(Debug)]
 pub struct KernelSession {
-    kernel: WolframKernelProcess,
+    process: process::Child,
+    link: Link,
+    config: KernelConfig,
 }
 
 impl KernelSession {
@@ -25,19 +32,33 @@ impl KernelSession {
     pub fn new(config: &KernelConfig) -> anyhow::Result<Self> {
         let exe = discover_kernel_executable(config).context("discover kernel executable")?;
 
-        // NOTE: wstp::kernel::WolframKernelProcess::launch currently blocks forever
-        // waiting for link activation. We record timeouts in config, but don't yet
-        // enforce them. (Implementing timeouts requires non-blocking activation and
-        // threading; Link is not guaranteed Send.)
-        if config.start_timeout_ms > 0 {
-            debug!(start_timeout_ms = config.start_timeout_ms, "kernel start timeout configured (not yet enforced)");
-        }
-
         info!(path = %exe.display(), "launching wolfram kernel via WSTP");
-        let kernel = WolframKernelProcess::launch(&exe).map_err(|e| anyhow!("{e:?}"))?;
+        let (process, link) = launch_kernel_with_timeout(&exe, config.start_timeout_ms)
+            .context("launch kernel with timeout")?;
         info!("kernel connected");
 
-        Ok(Self { kernel })
+        Ok(Self {
+            process,
+            link,
+            config: config.clone(),
+        })
+    }
+
+    #[instrument(skip_all)]
+    pub fn restart(&mut self, config: &KernelConfig) -> anyhow::Result<()> {
+        // Best-effort: terminate the old process and establish a new one.
+        let _ = self.process.kill();
+        let _ = self.process.wait();
+
+        let exe = discover_kernel_executable(config).context("discover kernel executable")?;
+        info!(path = %exe.display(), "restarting wolfram kernel via WSTP");
+        let (process, link) = launch_kernel_with_timeout(&exe, config.start_timeout_ms)
+            .context("launch kernel with timeout")?;
+
+        self.process = process;
+        self.link = link;
+        self.config = config.clone();
+        Ok(())
     }
 
     #[instrument(skip_all, fields(eval_id))]
@@ -50,59 +71,67 @@ impl KernelSession {
             });
         }
 
-        // NOTE: Similar to start timeout, eval timeout is not enforced yet.
-        debug!(
-            eval_timeout_ms = %"<not enforced>",
-            "evaluation requested"
-        );
+        let deadline = Instant::now()
+            .checked_add(Duration::from_millis(self.config.eval_timeout_ms))
+            .expect("deadline overflow");
 
         let expr = Expr::normal(
             Symbol::new("System`ToExpression"),
             vec![Expr::string(wl_input)],
         );
 
-        let link = self.kernel.link();
-        link.put_eval_packet(&expr).map_err(|e| anyhow!("{e:?}"))?;
-        link.flush().map_err(|e| anyhow!("{e:?}"))?;
+        self.link
+            .put_eval_packet(&expr)
+            .map_err(|e| anyhow!("{e:?}"))?;
+        self.link.flush().map_err(|e| anyhow!("{e:?}"))?;
 
         let mut messages = Vec::new();
-        let mut output_text: Option<String> = None;
-        let mut raw_expr: Option<String> = None;
 
         loop {
-            let pkt = link.raw_next_packet().map_err(|e| anyhow!("{e:?}"))?;
+            wait_until(&mut self.link, deadline).context("wait for kernel activity")?;
+            let pkt = self.link.raw_next_packet().map_err(|e| anyhow!("{e:?}"))?;
 
             match pkt {
                 sys::RETURNPKT => {
-                    let result = link.get_expr().map_err(|e| anyhow!("{e:?}"))?;
-                    raw_expr = Some(format!("{result:?}"));
+                    let result = self.link.get_expr().map_err(|e| anyhow!("{e:?}"))?;
+                    let raw_expr = Some(format!("{result:?}"));
 
-                    output_text = Some(
-                        expr_to_input_form_string(link, &result)
+                    let output_text = expr_to_input_form_string(&mut self.link, deadline, &result)
                         .unwrap_or_else(|err| {
                             warn!(error = %err, "failed to stringify result");
                             format!("{result:?}")
-                        }),
+                        });
+
+                    self.link.new_packet().map_err(|e| anyhow!("{e:?}"))?;
+
+                    info!(
+                        eval_id,
+                        output_len = output_text.len(),
+                        message_count = messages.len(),
+                        "evaluation complete"
                     );
 
-                    link.new_packet().map_err(|e| anyhow!("{e:?}"))?;
-                    break;
-                },
+                    return Ok(EvalResult {
+                        output_text,
+                        messages,
+                        raw_expr,
+                    });
+                }
                 sys::TEXTPKT | sys::RETURNTEXTPKT => {
-                    if let Ok(s) = link.get_string() {
+                    if let Ok(s) = self.link.get_string() {
                         messages.push(s);
                     } else {
                         messages.push("<text packet decode error>".to_string());
                     }
-                    link.new_packet().map_err(|e| anyhow!("{e:?}"))?;
-                },
+                    self.link.new_packet().map_err(|e| anyhow!("{e:?}"))?;
+                }
                 sys::MESSAGEPKT => {
                     // MESSAGEPKT structure: MessagePacket[symbol, messageName]
                     // We'll read it as a generic Expr and debug-print it.
-                    let msg = link.get_expr().map_err(|e| anyhow!("{e:?}"))?;
+                    let msg = self.link.get_expr().map_err(|e| anyhow!("{e:?}"))?;
                     messages.push(format!("{msg:?}"));
-                    link.new_packet().map_err(|e| anyhow!("{e:?}"))?;
-                },
+                    self.link.new_packet().map_err(|e| anyhow!("{e:?}"))?;
+                }
                 sys::INPUTNAMEPKT
                 | sys::OUTPUTNAMEPKT
                 | sys::SYNTAXPKT
@@ -115,27 +144,17 @@ impl KernelSession {
                 | sys::LASTUSERPKT
                 | sys::ILLEGALPKT => {
                     // Consume/skip.
-                    link.new_packet().map_err(|e| anyhow!("{e:?}"))?;
-                },
+                    self.link.new_packet().map_err(|e| anyhow!("{e:?}"))?;
+                }
                 other => {
                     debug!(packet = other, "unhandled packet type; skipping");
-                    link.new_packet().map_err(|e| anyhow!("{e:?}"))?;
-                },
+                    self.link.new_packet().map_err(|e| anyhow!("{e:?}"))?;
+                }
             }
         }
 
-        info!(
-            eval_id,
-            output_len = output_text.as_deref().map(|s| s.len()).unwrap_or(0),
-            message_count = messages.len(),
-            "evaluation complete"
-        );
-
-        Ok(EvalResult {
-            output_text: output_text.unwrap_or_default(),
-            messages,
-            raw_expr,
-        })
+        // Unreachable: the kernel is expected to eventually send RETURNPKT for an evaluation.
+        // If it doesn't, `wait_until` will time out and return an error.
     }
 }
 
@@ -153,18 +172,29 @@ fn discover_kernel_executable(config: &KernelConfig) -> anyhow::Result<PathBuf> 
         if p.is_file() {
             return Ok(p);
         }
-        return Err(anyhow!("kernel.path does not exist or is not a file: {}", p.display()));
+        return Err(anyhow!(
+            "kernel.path does not exist or is not a file: {}",
+            p.display()
+        ));
     }
 
-    let app = WolframApp::try_default().context("wolfram-app-discovery could not find a Wolfram installation")?;
+    let app = WolframApp::try_default()
+        .context("wolfram-app-discovery could not find a Wolfram installation")?;
     app.kernel_executable_path()
         .context("failed to get kernel executable path from wolfram-app-discovery")
 }
 
-fn expr_to_input_form_string(link: &mut Link, result: &Expr) -> anyhow::Result<String> {
+fn expr_to_input_form_string(
+    link: &mut Link,
+    deadline: Instant,
+    result: &Expr,
+) -> anyhow::Result<String> {
     let to_string_expr = Expr::normal(
         Symbol::new("System`ToString"),
-        vec![result.clone(), Expr::symbol(Symbol::new("System`InputForm"))],
+        vec![
+            result.clone(),
+            Expr::symbol(Symbol::new("System`InputForm")),
+        ],
     );
 
     link.put_eval_packet(&to_string_expr)
@@ -172,6 +202,7 @@ fn expr_to_input_form_string(link: &mut Link, result: &Expr) -> anyhow::Result<S
     link.flush().map_err(|e| anyhow!("{e:?}"))?;
 
     loop {
+        wait_until(link, deadline).context("wait for kernel activity (ToString)")?;
         let pkt = link.raw_next_packet().map_err(|e| anyhow!("{e:?}"))?;
         if pkt == sys::RETURNPKT {
             let s_expr = link.get_expr().map_err(|e| anyhow!("{e:?}"))?;
@@ -184,6 +215,62 @@ fn expr_to_input_form_string(link: &mut Link, result: &Expr) -> anyhow::Result<S
             return Ok(format!("{s_expr:?}"));
         } else {
             link.new_packet().map_err(|e| anyhow!("{e:?}"))?;
+        }
+    }
+}
+
+fn launch_kernel_with_timeout(
+    kernel_exe: &PathBuf,
+    start_timeout_ms: u64,
+) -> anyhow::Result<(process::Child, Link)> {
+    let mut link = Link::listen(Protocol::SharedMemory, "").map_err(|e| anyhow!("{e:?}"))?;
+    let name = link.link_name();
+    if name.is_empty() {
+        return Err(anyhow!("WSTP link name was empty"));
+    }
+
+    let child = process::Command::new(kernel_exe)
+        .arg("-wstp")
+        .arg("-linkprotocol")
+        .arg("SharedMemory")
+        .arg("-linkconnect")
+        .arg("-linkname")
+        .arg(&name)
+        .spawn()
+        .context("spawn WolframKernel")?;
+
+    let deadline = Instant::now()
+        .checked_add(Duration::from_millis(start_timeout_ms))
+        .ok_or_else(|| anyhow!("start timeout overflow"))?;
+
+    // Wait for activity, then activate. If the kernel never connects (e.g. licensing
+    // prompt), we time out instead of hanging forever.
+    wait_until(&mut link, deadline).context("wait for kernel connect")?;
+    link.activate().map_err(|e| anyhow!("{e:?}"))?;
+
+    Ok((child, link))
+}
+
+fn wait_until(link: &mut Link, deadline: Instant) -> anyhow::Result<()> {
+    use std::ops::ControlFlow;
+
+    loop {
+        if Instant::now() >= deadline {
+            return Err(anyhow!("timeout waiting for kernel/WSTP activity"));
+        }
+
+        let got_data = link
+            .wait_with_callback(|_link| {
+                if Instant::now() < deadline {
+                    ControlFlow::Continue(())
+                } else {
+                    ControlFlow::Break(())
+                }
+            })
+            .map_err(|e| anyhow!("{e:?}"))?;
+
+        if got_data {
+            return Ok(());
         }
     }
 }

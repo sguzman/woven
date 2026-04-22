@@ -1,15 +1,11 @@
 use std::{fs, path::PathBuf};
 
 use anyhow::Context;
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
 use tracing_subscriber::{
-    fmt,
-    layer::SubscriberExt as _,
-    util::SubscriberInitExt as _,
-    EnvFilter,
-    Layer as _,
+    EnvFilter, Layer as _, fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _,
 };
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::config::{AppConfig, Mode};
 
@@ -100,9 +96,7 @@ fn build_file_writer(config: &AppConfig) -> anyhow::Result<(NonBlocking, WorkerG
     let ts = OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .context("format timestamp")?
-        .replace(':', "")
-        .replace('.', "")
-        .replace('Z', "Z");
+        .replace([':', '.'], "");
     let pid = std::process::id();
 
     let file_path = dir.join(format!("{stem}-{ts}-{pid}.{ext}"));

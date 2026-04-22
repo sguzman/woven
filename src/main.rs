@@ -18,7 +18,13 @@ fn main() -> anyhow::Result<()> {
     eframe::run_native(
         "Woven",
         native_options,
-        Box::new(move |cc| Ok(Box::new(woven::app::WovenApp::new(cc, config.clone(), kernel)))),
+        Box::new(move |cc| {
+            Ok(Box::new(woven::app::WovenApp::new(
+                cc,
+                config.clone(),
+                kernel,
+            )))
+        }),
     )
     .context("run eframe app")?;
 

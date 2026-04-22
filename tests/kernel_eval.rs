@@ -14,5 +14,9 @@ fn kernel_evaluates_simple_expression() {
     let mut kernel = KernelSession::new(&cfg.kernel).expect("start kernel");
     let out = kernel.evaluate(1, "1+1").expect("eval");
 
-    assert!(out.output_text.contains('2'), "output was: {}", out.output_text);
+    assert!(
+        out.output_text.contains('2'),
+        "output was: {}",
+        out.output_text
+    );
 }

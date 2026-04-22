@@ -1,6 +1,6 @@
 use std::{env, path::PathBuf};
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use serde::Deserialize;
 use tracing::debug;
 
@@ -129,16 +129,23 @@ impl Default for KernelConfig {
 pub struct UiConfig {
     #[serde(default = "default_font_scale")]
     pub font_scale: f32,
+    #[serde(default = "default_notebook_path")]
+    pub notebook_path: String,
 }
 
 fn default_font_scale() -> f32 {
     1.0
 }
 
+fn default_notebook_path() -> String {
+    "notebooks/default.json".to_string()
+}
+
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
             font_scale: default_font_scale(),
+            notebook_path: default_notebook_path(),
         }
     }
 }
@@ -216,7 +223,10 @@ mod tests {
             mode: Mode::Dev,
             logging: LoggingConfig::default(),
             kernel: KernelConfig::default(),
-            ui: UiConfig { font_scale: 0.0 },
+            ui: UiConfig {
+                font_scale: 0.0,
+                notebook_path: default_notebook_path(),
+            },
             plot: PlotConfig::default(),
         };
 
@@ -258,4 +268,3 @@ font_scale = 2.0
         assert_eq!(cfg.ui.font_scale, 2.0);
     }
 }
-

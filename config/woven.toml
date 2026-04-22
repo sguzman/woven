@@ -20,6 +20,7 @@ eval_timeout_ms = 60000
 
 [ui]
 font_scale = 1.0
+notebook_path = "notebooks/default.json"
 
 [plot]
 # Reserved for upcoming plot interception / rendering tuning.
