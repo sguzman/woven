@@ -14,6 +14,89 @@ jobs:
           components: rustfmt, clippy
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+      - name: Create WSTP Mock
+        run: |
+          mkdir -p /tmp/wstp-mock
+          cat << 'C_EOF' > /tmp/wstp-mock/mock.c
+          void WSInitialize() {}
+          void WSDeinitialize() {}
+          void WSReleaseUTF8String() {}
+          void WSReleaseUTF8Symbol() {}
+          void WSOpenArgcArgv() {}
+          void WSGetType() {}
+          void WSGetArgCount() {}
+          void WSGetUTF8String() {}
+          void WSGetUTF8Symbol() {}
+          void WSGetReal64() {}
+          void WSErrorString() {}
+          void WSGetInteger64() {}
+          void WSEndPacket() {}
+          void WSPutUTF8Symbol() {}
+          void WSPutType() {}
+          void WSPutArgCount() {}
+          void WSPutReal64() {}
+          void WSPutInteger64() {}
+          void WSPutUTF8String() {}
+          void WSActivate() {}
+          void WSTestHead() {}
+          void WSPutFunction() {}
+          void WSPutData() {}
+          void WSPutMessage() {}
+          void WSGetNext() {}
+          void WSPutSize() {}
+          void WSNewPacket() {}
+          void WSPutString() {}
+          void WSError() {}
+          void WSPutSymbol() {}
+          void WSClose() {}
+          void WSCreateEnv() {}
+          void WSGetFunction() {}
+          void WSReady() {}
+          void WSGetList() {}
+          void WSClearError() {}
+          void WSCheckFunction() {}
+          void WSEndEnvironment() {}
+          void WSErrorMessage() {}
+          void WSReleaseErrorMessage() {}
+          void WSName() {}
+          void WSPutMessageWithArg() {}
+          void WSNextPacket() {}
+          void WSFlush() {}
+          void WSWaitForLinkActivityWithCallback() {}
+          void WSPutReal32() {}
+          void WSPutInteger32() {}
+          void WSGetInteger() {}
+          void WSGetInteger8() {}
+          void WSGetInteger16() {}
+          void WSGetInteger32() {}
+          void WSGetReal32() {}
+          void WSGetNumberAsUTF8String() {}
+          void WSPutInteger8() {}
+          void WSPutInteger16() {}
+          void WSPutInteger() {}
+          void WSOpenString() {}
+          void WSPutInteger8List() {}
+          void WSPutInteger16List() {}
+          void WSPutInteger32List() {}
+          void WSPutInteger64List() {}
+          void WSPutReal32List() {}
+          void WSPutReal64List() {}
+          void WSGetInteger8List() {}
+          void WSGetInteger16List() {}
+          void WSGetInteger32List() {}
+          void WSGetInteger64List() {}
+          void WSGetReal32List() {}
+          void WSGetReal64List() {}
+          void WSReleaseInteger8List() {}
+          void WSReleaseInteger16List() {}
+          void WSReleaseInteger32List() {}
+          void WSReleaseInteger64List() {}
+          void WSReleaseReal32List() {}
+          void WSReleaseReal64List() {}
+          C_EOF
+          gcc -c /tmp/wstp-mock/mock.c -o /tmp/wstp-mock/mock.o
+          ar rcs /tmp/wstp-mock/libWSTP64i4.a /tmp/wstp-mock/mock.o
+          echo "WSTP_COMPILER_ADDITIONS_DIRECTORY=/tmp/wstp-mock" >> $GITHUB_ENV
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy
