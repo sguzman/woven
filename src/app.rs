@@ -1921,7 +1921,10 @@ fn is_plot_like(output: &EvalResult) -> bool {
 }
 
 fn truncate_str(s: &str, max: usize) -> &str {
-    if s.len() <= max { s } else { &s[..max] }
+    match s.char_indices().nth(max) {
+        None => s,
+        Some((idx, _)) => &s[..idx],
+    }
 }
 
 fn wl_escape_string(s: &str) -> String {
@@ -1930,4 +1933,53 @@ fn wl_escape_string(s: &str) -> String {
         .replace('\"', "\\\"")
         .replace('\n', "\\n")
         .replace('\r', "")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_str_shorter() {
+        assert_eq!(truncate_str("hello", 10), "hello");
+    }
+
+    #[test]
+    fn test_truncate_str_exact() {
+        assert_eq!(truncate_str("hello", 5), "hello");
+    }
+
+    #[test]
+    fn test_truncate_str_longer() {
+        assert_eq!(truncate_str("hello world", 5), "hello");
+    }
+
+    #[test]
+    fn test_truncate_str_empty() {
+        assert_eq!(truncate_str("", 5), "");
+        assert_eq!(truncate_str("", 0), "");
+    }
+
+    #[test]
+    fn test_truncate_str_zero_max() {
+        assert_eq!(truncate_str("hello", 0), "");
+    }
+
+    #[test]
+    fn test_truncate_str_multibyte() {
+        let s = "ééééé";
+        // Each 'é' is 2 bytes.
+        assert_eq!(truncate_str(s, 0), "");
+        assert_eq!(truncate_str(s, 1), "é");
+        assert_eq!(truncate_str(s, 3), "ééé");
+        assert_eq!(truncate_str(s, 5), "ééééé");
+        assert_eq!(truncate_str(s, 10), "ééééé");
+
+        // Mixed ascii and multibyte
+        let s2 = "aébéc";
+        assert_eq!(truncate_str(s2, 2), "aé");
+        assert_eq!(truncate_str(s2, 3), "aéb");
+        assert_eq!(truncate_str(s2, 4), "aébé");
+        assert_eq!(truncate_str(s2, 5), "aébéc");
+    }
 }

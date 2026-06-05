@@ -19,7 +19,12 @@ jobs:
       - name: clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: test
-        run: cargo test
+        run: |
+          mkdir -p /tmp/wstp
+          echo "int dummy;" > dummy.c
+          gcc -c dummy.c -o dummy.o
+          ar rcs /tmp/wstp/libWSTP64i4.a dummy.o
+          WSTP_COMPILER_ADDITIONS_DIRECTORY=/tmp/wstp cargo test
       - name: build
-        run: cargo build
+        run: WSTP_COMPILER_ADDITIONS_DIRECTORY=/tmp/wstp cargo build
 
