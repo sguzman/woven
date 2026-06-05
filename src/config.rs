@@ -180,16 +180,13 @@ fn default_inspector_max_width() -> f32 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum Theme {
+    #[default]
     Dark,
     Light,
 }
 
-impl Default for Theme {
-    fn default() -> Self {
-        Theme::Dark
-    }
-}
 
 impl Theme {
     pub fn as_str(self) -> &'static str {
@@ -332,6 +329,24 @@ mod tests {
     use super::*;
     use std::env;
     use std::fs;
+
+    #[test]
+    fn load_missing_base_file_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = env::current_dir().unwrap();
+
+        env::set_current_dir(tmp.path()).unwrap();
+        let res = load();
+        env::set_current_dir(old).unwrap();
+
+        assert!(res.is_err());
+        let err_msg = res.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("missing required config file"),
+            "Error message did not match expected: {}",
+            err_msg
+        );
+    }
 
     #[test]
     fn validates_font_scale() {
