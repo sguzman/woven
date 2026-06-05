@@ -374,4 +374,42 @@ mod tests {
         };
         assert_eq!(kernel_path_string(&cfg), "<auto>");
     }
+
+    #[test]
+    fn test_wl_escape_string_empty() {
+        assert_eq!(wl_escape_string(""), "");
+    }
+
+    #[test]
+    fn test_wl_escape_string_plain() {
+        assert_eq!(wl_escape_string("hello world"), "hello world");
+    }
+
+    #[test]
+    fn test_wl_escape_string_backslash() {
+        assert_eq!(
+            wl_escape_string("C:\\path\\to\\file"),
+            "C:\\\\path\\\\to\\\\file"
+        );
+    }
+
+    #[test]
+    fn test_wl_escape_string_quotes() {
+        assert_eq!(wl_escape_string("say \"hello\""), "say \\\"hello\\\"");
+    }
+
+    #[test]
+    fn test_wl_escape_string_newlines() {
+        // \n maps to literal \n
+        // \r is stripped
+        assert_eq!(wl_escape_string("line 1\nline 2"), "line 1\\nline 2");
+        assert_eq!(wl_escape_string("line 1\r\nline 2"), "line 1\\nline 2");
+    }
+
+    #[test]
+    fn test_wl_escape_string_mixed() {
+        let input = "path: \"C:\\dir\"\nreturn\r";
+        let expected = "path: \\\"C:\\\\dir\\\"\\nreturn";
+        assert_eq!(wl_escape_string(input), expected);
+    }
 }
