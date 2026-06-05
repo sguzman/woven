@@ -16,10 +16,23 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: fmt
         run: cargo fmt --all --check
+      - name: mock wstp
+        run: |
+          mkdir -p /tmp/wstp
+          echo "int dummy;" > /tmp/wstp/dummy.c
+          gcc -c /tmp/wstp/dummy.c -o /tmp/wstp/dummy.o
+          ar rcs /tmp/wstp/libWSTP64i4.a /tmp/wstp/dummy.o
+          touch /tmp/wstp/wstp.h
       - name: clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+        env:
+          WSTP_COMPILER_ADDITIONS_DIRECTORY: /tmp/wstp
       - name: test
         run: cargo test
+        env:
+          WSTP_COMPILER_ADDITIONS_DIRECTORY: /tmp/wstp
       - name: build
         run: cargo build
+        env:
+          WSTP_COMPILER_ADDITIONS_DIRECTORY: /tmp/wstp
 
