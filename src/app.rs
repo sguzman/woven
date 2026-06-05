@@ -1931,3 +1931,24 @@ fn wl_escape_string(s: &str) -> String {
         .replace('\n', "\\n")
         .replace('\r', "")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_wl_escape_string() {
+        assert_eq!(wl_escape_string("hello"), "hello");
+        assert_eq!(wl_escape_string("hello\\world"), "hello\\\\world");
+        assert_eq!(wl_escape_string("hello\"world"), "hello\\\"world");
+        assert_eq!(wl_escape_string("hello\nworld"), "hello\\nworld");
+        assert_eq!(wl_escape_string("hello\rworld"), "helloworld");
+
+        // Edge cases
+        assert_eq!(wl_escape_string(""), "");
+        assert_eq!(wl_escape_string("\\\"\n\r"), "\\\\\\\"\\n");
+        assert_eq!(wl_escape_string("C:\\Users\\test"), "C:\\\\Users\\\\test");
+        assert_eq!(wl_escape_string("Line 1\r\nLine 2"), "Line 1\\nLine 2");
+        assert_eq!(wl_escape_string("\"Quoted\""), "\\\"Quoted\\\"");
+    }
+}
