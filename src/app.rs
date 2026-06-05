@@ -1931,3 +1931,44 @@ fn wl_escape_string(s: &str) -> String {
         .replace('\n', "\\n")
         .replace('\r', "")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn test_autosave_path_standard() {
+        let path = Path::new("document.nb");
+        let expected = PathBuf::from("document.nb.autosave");
+        assert_eq!(autosave_path(path), expected);
+    }
+
+    #[test]
+    fn test_autosave_path_with_directory() {
+        let path = Path::new("/tmp/dir/doc.nb");
+        let expected = PathBuf::from("/tmp/dir/doc.nb.autosave");
+        assert_eq!(autosave_path(path), expected);
+    }
+
+    #[test]
+    fn test_autosave_path_no_extension() {
+        let path = Path::new("filename");
+        let expected = PathBuf::from("filename.autosave");
+        assert_eq!(autosave_path(path), expected);
+    }
+
+    #[test]
+    fn test_autosave_path_empty() {
+        let path = Path::new("");
+        let expected = PathBuf::from(".autosave");
+        assert_eq!(autosave_path(path), expected);
+    }
+
+    #[test]
+    fn test_autosave_path_with_spaces() {
+        let path = Path::new("my file.nb");
+        let expected = PathBuf::from("my file.nb.autosave");
+        assert_eq!(autosave_path(path), expected);
+    }
+}
