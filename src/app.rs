@@ -1399,12 +1399,16 @@ impl eframe::App for WovenApp {
                             egui::ScrollArea::vertical()
                                 .max_height(180.0)
                                 .show(ui, |ui| {
+                                    let mut fetch_sym = None;
                                     for sym in &tab.doc_results {
                                         let selected =
                                             tab.doc_selected.as_deref() == Some(sym.as_str());
                                         if ui.selectable_label(selected, sym).clicked() {
-                                            tab.enqueue_doc_fetch(sym.clone());
+                                            fetch_sym = Some(sym.clone());
                                         }
+                                    }
+                                    if let Some(sym) = fetch_sym {
+                                        tab.enqueue_doc_fetch(sym);
                                     }
                                 });
 
