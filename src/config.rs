@@ -180,16 +180,13 @@ fn default_inspector_max_width() -> f32 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum Theme {
+    #[default]
     Dark,
     Light,
 }
 
-impl Default for Theme {
-    fn default() -> Self {
-        Theme::Dark
-    }
-}
 
 impl Theme {
     pub fn as_str(self) -> &'static str {
