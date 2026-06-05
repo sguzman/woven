@@ -144,7 +144,7 @@ impl KernelSession {
     ) -> anyhow::Result<(Expr, Vec<String>)> {
         let deadline = Instant::now()
             .checked_add(Duration::from_millis(self.config.eval_timeout_ms))
-            .expect("deadline overflow");
+            .ok_or_else(|| anyhow!("deadline overflow"))?;
 
         let expr = Expr::normal(
             Symbol::new("System`ToExpression"),
