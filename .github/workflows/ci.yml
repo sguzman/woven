@@ -14,6 +14,13 @@ jobs:
           components: rustfmt, clippy
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+      - name: Workaround for WSTP
+        run: |
+          echo "int dummy;" > dummy.c
+          gcc -c dummy.c -o dummy.o
+          mkdir -p /tmp/wstp
+          ar rcs /tmp/wstp/libWSTP64i4.a dummy.o
+          echo "WSTP_COMPILER_ADDITIONS_DIRECTORY=/tmp/wstp" >> $GITHUB_ENV
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy
