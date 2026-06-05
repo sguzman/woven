@@ -134,6 +134,13 @@ jobs:
           int WSEndMessage(void *link) { return 0; }
           void *WSUserData(void *link, void *data) { return NULL; }
           void *WSClearUserData(void *link) { return NULL; }
+          int WSGetData(void *link, char *data, int len, int *got) { return 0; }
+          const char *WSErrorMessage(void *link) { return "error message"; }
+          void WSReleaseErrorMessage(void *link, const char *msg) {}
+          const char *WSName(void *link) { return "name"; }
+          int WSFlush(void *link) { return 0; }
+          int WSPutFunction(void *link, const char *s, int len) { return 0; }
+          int WSGetFunction(void *link, const char **sp, int *lenp) { return 0; }
           EOF
           gcc -c dummy.c -o dummy.o
           ar rcs /tmp/wstp/libWSTP64i4.a dummy.o
