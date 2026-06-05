@@ -1931,3 +1931,26 @@ fn wl_escape_string(s: &str) -> String {
         .replace('\n', "\\n")
         .replace('\r', "")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::anyhow;
+
+    #[test]
+    fn test_is_wstp_desync_error() {
+        let err1 = anyhow!("WSNextPacket called while the current packet has unread data");
+        let err2 = anyhow!("Some prefix: WSTP error (code 22) - some suffix");
+        let err3 = anyhow!("Evaluation has no context right now");
+
+        assert!(Tab::is_wstp_desync_error(&err1));
+        assert!(Tab::is_wstp_desync_error(&err2));
+        assert!(Tab::is_wstp_desync_error(&err3));
+
+        let normal_err = anyhow!("Syntax::sntx: Invalid syntax.");
+        assert!(!Tab::is_wstp_desync_error(&normal_err));
+
+        let empty_err = anyhow!("");
+        assert!(!Tab::is_wstp_desync_error(&empty_err));
+    }
+}
