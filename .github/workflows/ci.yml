@@ -18,8 +18,138 @@ jobs:
         run: cargo fmt --all --check
       - name: clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Mock WSTP Environment
+        run: |
+          mkdir -p /tmp/wstp
+          cat << 'EOF' > dummy.c
+          #include <stddef.h>
+
+          void* WSInitialize(void *param) { return NULL; }
+          void WSDeinitialize(void *env) {}
+          void WSReleaseUTF8String(void *link, const char *s, int len) {}
+          void WSReleaseUTF8Symbol(void *link, const char *s, int len) {}
+          void *WSOpenArgcArgv(void *env, int argc, char **argv, int *errp) { return NULL; }
+          int WSGetType(void *link) { return 0; }
+          int WSGetArgCount(void *link, int *countp) { return 0; }
+          int WSGetUTF8String(void *link, const unsigned char **sp, int *lenp, int *chars) { return 0; }
+          int WSGetUTF8Symbol(void *link, const unsigned char **sp, int *lenp, int *chars) { return 0; }
+          int WSGetReal64(void *link, double *dp) { return 0; }
+          int WSGetInteger64(void *link, long long *ip) { return 0; }
+          int WSEndPacket(void *link) { return 0; }
+          int WSPutUTF8Symbol(void *link, const unsigned char *s, int len) { return 0; }
+          int WSPutType(void *link, int type) { return 0; }
+          const char *WSErrorString(void *link) { return "error"; }
+          int WSPutArgCount(void *link, int count) { return 0; }
+          int WSPutReal64(void *link, double d) { return 0; }
+          int WSPutInteger64(void *link, long long i) { return 0; }
+          int WSPutUTF8String(void *link, const unsigned char *s, int len) { return 0; }
+          int WSActivate(void *link) { return 0; }
+          int WSError(void *link) { return 0; }
+          int WSClose(void *link) { return 0; }
+          int WSNewPacket(void *link) { return 0; }
+          int WSNextPacket(void *link) { return 0; }
+          int WSClearError(void *link) { return 0; }
+          int WSReady(void *link) { return 0; }
+          void WSReleaseString(void *link, const char *s) {}
+          void WSReleaseSymbol(void *link, const char *s) {}
+          int WSGetString(void *link, const char **sp) { return 0; }
+          int WSGetSymbol(void *link, const char **sp) { return 0; }
+          int WSPutString(void *link, const char *s) { return 0; }
+          int WSPutSymbol(void *link, const char *s) { return 0; }
+          int WSGetInteger(void *link, int *ip) { return 0; }
+          int WSPutInteger(void *link, int i) { return 0; }
+          int WSGetReal(void *link, double *dp) { return 0; }
+          int WSPutReal(void *link, double d) { return 0; }
+
+          int WSGetBinaryNumberArray(void *link, void **datap, int *dimsp, char ***headsp, int *depthp, int type) { return 0; }
+          void WSReleaseBinaryNumberArray(void *link, void *data, int *dims, char **heads, int depth, int type) {}
+          int WSGetNumberArrayData(void *link, void *data, int *dims, char **heads, int depth, int type) { return 0; }
+          int WSPutBinaryNumberArray(void *link, void *data, int *dims, char **heads, int depth, int type) { return 0; }
+          int WSGetMessage(void *link, int *msgp, int *argp) { return 0; }
+
+          int WSPutSize(void *link, int size) { return 0; }
+          int WSPutData(void *link, const char *data, int len) { return 0; }
+
+          int WSGetBytes(void *link, unsigned char *sp, int len, int *got) { return 0; }
+          int WSPutBytes(void *link, const unsigned char *sp, int len) { return 0; }
+          int WSGetInteger16(void *link, short *ip) { return 0; }
+          int WSPutInteger16(void *link, short i) { return 0; }
+          int WSGetInteger32(void *link, int *ip) { return 0; }
+          int WSPutInteger32(void *link, int i) { return 0; }
+          int WSGetReal32(void *link, float *dp) { return 0; }
+          int WSPutReal32(void *link, float d) { return 0; }
+
+          int WSGetInteger8List(void *link, unsigned char **datap, int *lenp) { return 0; }
+          void WSReleaseInteger8List(void *link, unsigned char *data, int len) {}
+          int WSGetInteger16List(void *link, short **datap, int *lenp) { return 0; }
+          void WSReleaseInteger16List(void *link, short *data, int len) {}
+          int WSGetInteger32List(void *link, int **datap, int *lenp) { return 0; }
+          void WSReleaseInteger32List(void *link, int *data, int len) {}
+          int WSGetInteger64List(void *link, long long **datap, int *lenp) { return 0; }
+          void WSReleaseInteger64List(void *link, long long *data, int len) {}
+          int WSGetReal32List(void *link, float **datap, int *lenp) { return 0; }
+          void WSReleaseReal32List(void *link, float *data, int len) {}
+          int WSGetReal64List(void *link, double **datap, int *lenp) { return 0; }
+          void WSReleaseReal64List(void *link, double *data, int len) {}
+
+          int WSPutInteger8List(void *link, const unsigned char *data, int len) { return 0; }
+          int WSPutInteger16List(void *link, const short *data, int len) { return 0; }
+          int WSPutInteger32List(void *link, const int *data, int len) { return 0; }
+          int WSPutInteger64List(void *link, const long long *data, int len) { return 0; }
+          int WSPutReal32List(void *link, const float *data, int len) { return 0; }
+          int WSPutReal64List(void *link, const double *data, int len) { return 0; }
+
+          int WSGetInteger8Array(void *link, unsigned char **datap, int **dimsp, char ***headsp, int *depthp) { return 0; }
+          void WSReleaseInteger8Array(void *link, unsigned char *data, int *dims, char **heads, int depth) {}
+          int WSPutInteger8Array(void *link, const unsigned char *data, const int *dims, char **heads, int depth) { return 0; }
+
+          int WSGetInteger16Array(void *link, short **datap, int **dimsp, char ***headsp, int *depthp) { return 0; }
+          void WSReleaseInteger16Array(void *link, short *data, int *dims, char **heads, int depth) {}
+          int WSPutInteger16Array(void *link, const short *data, const int *dims, char **heads, int depth) { return 0; }
+
+          int WSGetInteger32Array(void *link, int **datap, int **dimsp, char ***headsp, int *depthp) { return 0; }
+          void WSReleaseInteger32Array(void *link, int *data, int *dims, char **heads, int depth) {}
+          int WSPutInteger32Array(void *link, const int *data, const int *dims, char **heads, int depth) { return 0; }
+
+          int WSGetInteger64Array(void *link, long long **datap, int **dimsp, char ***headsp, int *depthp) { return 0; }
+          void WSReleaseInteger64Array(void *link, long long *data, int *dims, char **heads, int depth) {}
+          int WSPutInteger64Array(void *link, const long long *data, const int *dims, char **heads, int depth) { return 0; }
+
+          int WSGetReal32Array(void *link, float **datap, int **dimsp, char ***headsp, int *depthp) { return 0; }
+          void WSReleaseReal32Array(void *link, float *data, int *dims, char **heads, int depth) {}
+          int WSPutReal32Array(void *link, const float *data, const int *dims, char **heads, int depth) { return 0; }
+
+          int WSGetReal64Array(void *link, double **datap, int **dimsp, char ***headsp, int *depthp) { return 0; }
+          void WSReleaseReal64Array(void *link, double *data, int *dims, char **heads, int depth) {}
+          int WSPutReal64Array(void *link, const double *data, const int *dims, char **heads, int depth) { return 0; }
+
+          int WSWaitForLinkActivityWithCallback(void *link, void *callback) { return 0; }
+          int WSNewMessage(void *link, int msg, int arg) { return 0; }
+          void *WSMessage(void *link, int msg, int arg) { return NULL; }
+          int WSTestMessage(void *link, int msg, int arg) { return 0; }
+          int WSTransferMessage(void *link) { return 0; }
+          int WSPutMessage(void *link, int msg) { return 0; }
+          int WSPutMessageWithArg(void *link, int msg, int arg) { return 0; }
+          int WSPutReturnMessage(void *link, int msg) { return 0; }
+          int WSEndMessage(void *link) { return 0; }
+          void *WSUserData(void *link, void *data) { return NULL; }
+          void *WSClearUserData(void *link) { return NULL; }
+          int WSGetData(void *link, char *data, int len, int *got) { return 0; }
+          const char *WSErrorMessage(void *link) { return "error message"; }
+          void WSReleaseErrorMessage(void *link, const char *msg) {}
+          const char *WSName(void *link) { return "name"; }
+          int WSFlush(void *link) { return 0; }
+          int WSPutFunction(void *link, const char *s, int len) { return 0; }
+          int WSGetFunction(void *link, const char **sp, int *lenp) { return 0; }
+          EOF
+          gcc -c dummy.c -o dummy.o
+          ar rcs /tmp/wstp/libWSTP64i4.a dummy.o
       - name: test
         run: cargo test
+        env:
+          WSTP_COMPILER_ADDITIONS_DIRECTORY: /tmp/wstp
       - name: build
         run: cargo build
+        env:
+          WSTP_COMPILER_ADDITIONS_DIRECTORY: /tmp/wstp
 
