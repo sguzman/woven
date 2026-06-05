@@ -14,12 +14,67 @@ jobs:
           components: rustfmt, clippy
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+      - name: Mock WSTP
+        run: |
+          mkdir -p /tmp/wstp
+          cat << 'C_EOF' > dummy.c
+          void WSWaitForLinkActivityWithCallback() {}
+          void WSInitialize() {}
+          void WSDeinitialize() {}
+          void WSReleaseUTF8String() {}
+          void WSReleaseUTF8Symbol() {}
+          void WSOpenArgcArgv() {}
+          void WSGetType() {}
+          void WSGetArgCount() {}
+          void WSErrorString() {}
+          void WSGetUTF8String() {}
+          void WSGetUTF8Symbol() {}
+          void WSGetReal64() {}
+          void WSGetInteger64() {}
+          void WSEndPacket() {}
+          void WSPutUTF8Symbol() {}
+          void WSPutType() {}
+          void WSPutArgCount() {}
+          void WSPutReal64() {}
+          void WSPutInteger64() {}
+          void WSPutUTF8String() {}
+          void WSActivate() {}
+          char* WSName() { return 0; }
+          void WSPutMessageWithArg() {}
+          void WSFlush() {}
+          void WSError() {}
+          void WSClose() {}
+          char* WSErrorMessage() { return 0; }
+          void WSClearError() {}
+          void WSNextPacket() {}
+          void WSNewPacket() {}
+          void WSGetNext() {}
+          void WSPutFunction() {}
+          void WSGetFunction() {}
+          void WSPutInteger32() {}
+          void WSGetInteger32() {}
+          void WSGetReal32() {}
+          void WSPutReal32() {}
+          void WSReleaseErrorMessage() {}
+          void WSReleaseErrorString() {}
+          void WSPutString() {}
+          void WSPutSymbol() {}
+          C_EOF
+          gcc -c dummy.c -o dummy.o
+          ar rcs /tmp/wstp/libWSTP64i4.a dummy.o
+          rm dummy.c dummy.o
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+        env:
+          WSTP_COMPILER_ADDITIONS_DIRECTORY: /tmp/wstp
       - name: test
         run: cargo test
+        env:
+          WSTP_COMPILER_ADDITIONS_DIRECTORY: /tmp/wstp
       - name: build
         run: cargo build
+        env:
+          WSTP_COMPILER_ADDITIONS_DIRECTORY: /tmp/wstp
 
