@@ -387,7 +387,10 @@ mod tests {
 
     #[test]
     fn test_wl_escape_string_backslash() {
-        assert_eq!(wl_escape_string("C:\\path\\to\\file"), "C:\\\\path\\\\to\\\\file");
+        assert_eq!(
+            wl_escape_string("C:\\path\\to\\file"),
+            "C:\\\\path\\\\to\\\\file"
+        );
     }
 
     #[test]
