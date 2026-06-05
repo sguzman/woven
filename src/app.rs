@@ -1921,7 +1921,11 @@ fn is_plot_like(output: &EvalResult) -> bool {
 }
 
 fn truncate_str(s: &str, max: usize) -> &str {
-    if s.len() <= max { s } else { &s[..max] }
+    if s.len() <= max {
+        s
+    } else {
+        &s[..s.floor_char_boundary(max)]
+    }
 }
 
 fn wl_escape_string(s: &str) -> String {
@@ -1930,4 +1934,37 @@ fn wl_escape_string(s: &str) -> String {
         .replace('\"', "\\\"")
         .replace('\n', "\\n")
         .replace('\r', "")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_str_ascii() {
+        let s = "hello world";
+        assert_eq!(truncate_str(s, 5), "hello");
+        assert_eq!(truncate_str(s, 11), "hello world");
+        assert_eq!(truncate_str(s, 20), "hello world");
+    }
+
+    #[test]
+    fn test_truncate_str_unicode() {
+        let s = "こんにちは"; // Each character is 3 bytes
+        assert_eq!(s.len(), 15);
+
+        // Exact boundary
+        assert_eq!(truncate_str(s, 3), "こ");
+        assert_eq!(truncate_str(s, 6), "こん");
+
+        // Not on boundary
+        assert_eq!(truncate_str(s, 4), "こ");
+        assert_eq!(truncate_str(s, 5), "こ");
+        assert_eq!(truncate_str(s, 7), "こん");
+        assert_eq!(truncate_str(s, 8), "こん");
+
+        // Entire string
+        assert_eq!(truncate_str(s, 15), "こんにちは");
+        assert_eq!(truncate_str(s, 20), "こんにちは");
+    }
 }
